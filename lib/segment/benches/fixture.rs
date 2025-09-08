@@ -74,7 +74,7 @@ where
         (SINGLE_THREADED_HNSW_BUILD_THRESHOLD..num_vectors)
             .into_par_iter()
             .progress_with_style(
-                ProgressStyle::with_template("{percent:>3}% Buildng HNSW {wide_bar}").unwrap(),
+                ProgressStyle::with_template("{percent:>3}% Building HNSW {wide_bar}").unwrap(),
             )
             .for_each(add_point);
 
