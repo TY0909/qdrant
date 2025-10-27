@@ -7,14 +7,16 @@ use crate::common::operation_error::OperationResult;
 
 pub const HNSW_INDEX_CONFIG_FILE: &str = "hnsw_config.json";
 
+/// On-disk representation of HNSW graph config.
 #[derive(Debug, Deserialize, Serialize, Copy, Clone, PartialEq, Eq)]
 pub struct HnswGraphConfig {
-    pub m: usize,
     /// Requested M
-    pub m0: usize,
+    pub m: usize,
     /// Actual M on level 0
-    pub ef_construct: usize,
+    pub m0: usize,
     /// Number of neighbours to search on construction
+    pub ef_construct: usize,
+    /// Default value of [`crate::types::SearchParams::hnsw_ef`].
     pub ef: usize,
     /// We prefer a full scan search upto (excluding) this number of vectors.
     ///
