@@ -31,7 +31,7 @@ impl SnapshotEntry for Segment {
         format: SnapshotFormat,
         manifest: Option<&SnapshotManifest>,
     ) -> OperationResult<()> {
-        let segment_id = self.segment_uuid()?;
+        let segment_id = self.segment_uuid();
 
         log::debug!("Taking snapshot of segment {segment_id}");
 
@@ -102,7 +102,7 @@ impl SnapshotEntry for Segment {
 
 impl Segment {
     fn get_segment_manifest(&self) -> OperationResult<SegmentManifest> {
-        let segment_id = self.segment_uuid()?;
+        let segment_id = self.segment_uuid();
         let segment_version = self.version();
 
         let files = self
