@@ -73,8 +73,8 @@ pub struct EncodedBinVector<TBitsStoreType: BitsStoreType> {
 /// against Binary Quantized (BQ) vectors through bit-level transposition.
 ///
 /// STANDARD ENCODING:
-/// A regular scalar vector [float_1, float_2, ..., float_n] is quantized to
-/// [scalar_1, scalar_2, ..., scalar_n], where each scalar_i is a u8 value.
+/// A regular scalar vector `[float_1, float_2, ..., float_n]` is quantized to
+/// `[scalar_1, scalar_2, ..., scalar_n]`, where each scalar_i is a u8 value.
 ///
 /// PERFORMANCE ISSUE:
 /// Standard encoding is inefficient for scoring because it requires extracting
@@ -84,12 +84,12 @@ pub struct EncodedBinVector<TBitsStoreType: BitsStoreType> {
 /// TRANSPOSITION OPTIMIZATION:
 /// To improve scoring efficiency, we reorganize the data using bit-level transposition:
 ///
-/// 1. Take the encoded scalar vector [scalar_1, scalar_2, ..., scalar_n]
-/// 2. Divide into batches of size sizeof::<TBitsStoreType>() = N:
-///    [[scalar_1, scalar_2, ..., scalar_N], [scalar_N+1, ...], ...]
+/// 1. Take the encoded scalar vector `[scalar_1, scalar_2, ..., scalar_n]`
+/// 2. Divide into batches of size `size_of::<TBitsStoreType>()` = N:
+///    `[[scalar_1, scalar_2, ..., scalar_N], [scalar_N+1, ...], ...]`
 /// 3. Transpose bit positions within each batch:
-///    - Store all first bits: [scalar_1[0], scalar_2[0], ..., scalar_N[0]]
-///    - Store all second bits: [scalar_1[1], scalar_2[1], ..., scalar_N[1]]
+///    - Store all first bits: `[scalar_1[0], scalar_2[0], ..., scalar_N[0]]`
+///    - Store all second bits: `[scalar_1[1], scalar_2[1], ..., scalar_N[1]]`
 ///    - Continue for all bit positions...
 ///
 /// SCORING ADVANTAGE:
@@ -97,12 +97,14 @@ pub struct EncodedBinVector<TBitsStoreType: BitsStoreType> {
 /// - Extract a single TBitsStoreType value from the BQ vector
 /// - Perform N parallel operations with corresponding scalar bits
 /// - Use shift operations to compute the final score:
+///   ```ignore
 ///   (scalar_1[0] ^ bq_vector[0] + ) << 0 +
 ///   (scalar_1[0] ^ bq_vector[0] + ) << 1 +
 ///   (scalar_1[0] ^ bq_vector[0] + ) << 2 ...
+///   ```
 ///
 /// This eliminates the need to extract individual bits from BQ vectors during scoring.
-/// This idea was taken from http://arxiv.org/pdf/2405.12497, see Figure 2.
+/// This idea was taken from <http://arxiv.org/pdf/2405.12497>, see Figure 2.
 pub struct EncodedScalarVector<TBitsStoreType: BitsStoreType> {
     pub encoded_vector: Vec<TBitsStoreType>,
 }

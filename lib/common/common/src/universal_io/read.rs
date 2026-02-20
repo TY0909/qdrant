@@ -11,7 +11,7 @@ use crate::universal_io::file_ops::UniversalReadFileOps;
 pub trait UniversalRead<T: Copy + 'static>: UniversalReadFileOps {
     fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self>;
 
-    /// Prefer [`read_batch`] if you need high performance.
+    /// Prefer [`Self::read_batch`] if you need high performance.
     fn read<P: AccessPattern>(&self, range: ReadRange) -> Result<Cow<'_, [T]>>;
 
     /// Read the entire file in one logical access.
