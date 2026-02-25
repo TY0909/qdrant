@@ -1,82 +1,137 @@
-use std::ops::Range;
-
 use common::types::PointOffsetType;
 
-// Flatten points-to-values map
-// It's an analogue of `Vec<Vec<N>>` but more RAM efficient because it stores values in a single Vec.
+#[derive(Debug, Clone, Default)]
+struct PointMeta<N: Default> {
+    // `u32` is used instead of `usize` because it's more RAM efficient
+    // We can expect that we will never have more than 4 billion values per segment
+    offset: u32,
+    length: u32,
+    // For single values, we store them directly in the meta to eliminate an extra query.
+    value: N,
+}
+
 // This structure doesn't support adding new values, only removing.
 // It's used in immutable field indices like `ImmutableMapIndex`, `ImmutableNumericIndex`, etc to store points-to-values map.
 #[derive(Debug, Clone, Default)]
 pub struct ImmutablePointToValues<N: Default> {
-    // ranges in `point_to_values_container` which contains values for each point
-    // `u32` is used instead of `usize` because it's more RAM efficient
-    // We can expect that we will never have more than 4 billion values per segment
-    point_to_values: Vec<Range<u32>>,
-    // flattened values
-    point_to_values_container: Vec<N>,
+    metas: Vec<PointMeta<N>>,
+    // Flatten points-to-values map
+    // It's an analogue of `Vec<Vec<N>>` but more RAM efficient because it stores values in a single Vec.
+    multi_value_container: Vec<N>,
 }
 
 impl<N: Default> ImmutablePointToValues<N> {
     pub fn new(src: Vec<Vec<N>>) -> Self {
-        let mut point_to_values = Vec::with_capacity(src.len());
-        let all_values_count = src.iter().fold(0, |acc, values| acc + values.len());
-        let mut point_to_values_container = Vec::with_capacity(all_values_count);
+        let (multi_value_count, point_count) = src.iter().fold((0, 0), |(multi, point), values| {
+            let length = values.len();
+            match length {
+                0 | 1 => (multi, point + 1),
+                _ => (multi + length, point + 1),
+            }
+        });
+
+        let mut metas = Vec::with_capacity(point_count);
+        let mut multi_value_container = Vec::with_capacity(multi_value_count);
+
         for values in src {
-            let container_len = point_to_values_container.len() as u32;
-            let range = container_len..container_len + values.len() as u32;
-            point_to_values.push(range.clone());
-            point_to_values_container.extend(values);
+            let length = values.len() as u32;
+            match length {
+                0 => {
+                    metas.push(PointMeta {
+                        offset: 0,
+                        length,
+                        value: N::default(),
+                    });
+                }
+                1 => {
+                    let mut values = values;
+                    let value = values.pop().unwrap();
+                    metas.push(PointMeta {
+                        offset: 0,
+                        length,
+                        value,
+                    });
+                }
+                _ => {
+                    metas.push(PointMeta {
+                        offset: multi_value_container.len() as u32,
+                        length,
+                        value: N::default(),
+                    });
+                    multi_value_container.extend(values);
+                }
+            }
         }
+
         Self {
-            point_to_values,
-            point_to_values_container,
+            metas,
+            multi_value_container,
         }
     }
 
     pub fn check_values_any(&self, idx: PointOffsetType, check_fn: impl FnMut(&N) -> bool) -> bool {
-        let Some(range) = self.point_to_values.get(idx as usize).cloned() else {
+        let Some(meta) = self.metas.get(idx as usize) else {
             return false;
         };
 
-        let range = range.start as usize..range.end as usize;
-        if let Some(values) = self.point_to_values_container.get(range) {
-            values.iter().any(check_fn)
-        } else {
-            false
+        let vlen = meta.length as usize;
+
+        match vlen {
+            1 => std::iter::once(&meta.value).any(check_fn),
+            // Since zero-length cases are uncommon, handling them here improves performance.
+            _ => {
+                let start = meta.offset as usize;
+                self.multi_value_container
+                    .get(start..start + vlen)
+                    .map_or(false, |values| values.iter().any(check_fn))
+            }
         }
     }
 
     pub fn get_values(&self, idx: PointOffsetType) -> Option<impl Iterator<Item = &N> + '_> {
-        let range = self.point_to_values.get(idx as usize)?.clone();
-        let range = range.start as usize..range.end as usize;
-        Some(self.point_to_values_container[range].iter())
+        let meta = self.metas.get(idx as usize)?;
+
+        match meta.length {
+            0 => Some(std::slice::from_ref(&meta.value)[0..0].iter()),
+            1 => Some(std::slice::from_ref(&meta.value).iter()),
+            _ => self
+                .multi_value_container
+                .get(meta.offset as usize..(meta.offset + meta.length) as usize)
+                .map(|s| s.iter()),
+        }
     }
 
     pub fn get_values_count(&self, idx: PointOffsetType) -> Option<usize> {
-        self.point_to_values
+        self.metas
             .get(idx as usize)
-            .map(|range| (range.end - range.start) as usize)
+            .map(|meta| meta.length as usize)
     }
 
     pub fn remove_point(&mut self, idx: PointOffsetType) -> Vec<N> {
-        if self.point_to_values.len() <= idx as usize {
+        let Some(meta) = self.metas.get_mut(idx as usize) else {
             return Default::default();
+        };
+
+        let offset = meta.offset;
+        let length = meta.length;
+
+        match length {
+            0 => Default::default(),
+            1 => {
+                meta.length = Default::default();
+                vec![std::mem::take(&mut meta.value)]
+            }
+            _ => {
+                meta.length = Default::default();
+                let mut result = Vec::with_capacity(length as usize);
+                for value_index in offset as usize..(offset + length) as usize {
+                    result.push(std::mem::take(&mut self.multi_value_container[value_index]));
+                }
+                result
+            }
         }
-
-        let removed_values_range = self.point_to_values[idx as usize].clone();
-        self.point_to_values[idx as usize] = Default::default();
-
-        let mut result = Vec::with_capacity(removed_values_range.len());
-        for value_index in removed_values_range {
-            // deleted values still use RAM, but it's not a problem because optimizers will actually reduce RAM usage
-            let value = std::mem::take(&mut self.point_to_values_container[value_index as usize]);
-            result.push(value);
-        }
-
-        result
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +171,9 @@ mod tests {
         values[3].clear();
 
         check(&point_to_values, values.as_slice());
+        point_to_values.remove_point(6);
+        let removed_values: Vec<_> = point_to_values.get_values(6).unwrap().copied().collect();
+        assert!(removed_values.is_empty());
+        assert_eq!(Some(0), point_to_values.get_values_count(6));
     }
 }
