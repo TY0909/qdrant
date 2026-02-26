@@ -38,7 +38,7 @@ pub struct ImmutablePointToValues<N: Default> {
     /// Per-point entry describing where (or how) its values are stored.
     /// Indexed by `PointOffsetType`.
     point_entries: Vec<PointValueEntry<N>>,
-    /// Shared container holding values for points that have zero or multiple values.
+    /// Shared container holding values for points that have multiple values.
     /// Single-value points are **not** stored here — they live inline in `point_entries`.
     values_container: Vec<N>,
 }
