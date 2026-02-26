@@ -93,7 +93,6 @@ impl<N: Default> ImmutablePointToValues<N> {
 
         match entry {
             PointValueEntry::Single(v) => check_fn(v),
-            PointValueEntry::Slice { start: _, count: 0 } => false,
             PointValueEntry::Slice { start, count } => {
                 let range = *start as usize..(*start + *count) as usize;
                 if let Some(values) = self.values_container.get(range) {
