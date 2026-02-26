@@ -47,24 +47,32 @@ impl<N: Default> ImmutablePointToValues<N> {
     pub fn new(src: Vec<Vec<N>>) -> Self {
         let mut point_entries = Vec::with_capacity(src.len());
 
-        // Only values from empty or multi-value points go into the container.
+        // Only values from multi-value points go into the container.
         let container_capacity = src
             .iter()
-            .filter(|values| values.len() != 1)
-            .fold(0, |acc, values| acc + values.len());
+            .map(|values| values.len())
+            .filter(|&size| size > 1)
+            .sum();
         let mut values_container = Vec::with_capacity(container_capacity);
 
         for values in src {
-            if values.len() == 1 {
-                // Single value — store inline, skip container entirely.
-                let value = values.into_iter().next().expect("length checked above");
-                point_entries.push(PointValueEntry::Single(value));
-            } else {
-                // Zero or multiple values — store in container, record slice location.
-                let start = values_container.len() as u32;
-                let count = values.len() as u32;
-                point_entries.push(PointValueEntry::Slice { start, count });
-                values_container.extend(values);
+            match values.len() {
+                // Zero values — store inline
+                0 => {
+                    point_entries.push(PointValueEntry::default());
+                }
+                // Single value — store inline, skip container entirely
+                1 => {
+                    let value = values.into_iter().next().expect("length checked above");
+                    point_entries.push(PointValueEntry::Single(value));
+                }
+                // Multiple values — store in container, record slice location
+                2.. => {
+                    let start = values_container.len() as u32;
+                    let count = values.len() as u32;
+                    point_entries.push(PointValueEntry::Slice { start, count });
+                    values_container.extend(values);
+                }
             }
         }
 
@@ -74,13 +82,18 @@ impl<N: Default> ImmutablePointToValues<N> {
         }
     }
 
-    pub fn check_values_any(&self, idx: PointOffsetType, check_fn: impl FnMut(&N) -> bool) -> bool {
+    pub fn check_values_any(
+        &self,
+        idx: PointOffsetType,
+        mut check_fn: impl FnMut(&N) -> bool,
+    ) -> bool {
         let Some(entry) = self.point_entries.get(idx as usize) else {
             return false;
         };
 
         match entry {
-            PointValueEntry::Single(v) => std::iter::once(v).any(check_fn),
+            PointValueEntry::Single(v) => check_fn(v),
+            PointValueEntry::Slice { start: _, count: 0 } => false,
             PointValueEntry::Slice { start, count } => {
                 let range = *start as usize..(*start + *count) as usize;
                 if let Some(values) = self.values_container.get(range) {
@@ -107,7 +120,7 @@ impl<N: Default> ImmutablePointToValues<N> {
         let entry = self.point_entries.get(idx as usize)?;
         match entry {
             PointValueEntry::Single(_) => Some(1),
-            PointValueEntry::Slice { count, .. } => Some(*count as usize),
+            PointValueEntry::Slice { start: _, count } => Some(*count as usize),
         }
     }
 
@@ -185,13 +198,13 @@ mod tests {
             vec![42],   // single — inline
             vec![1, 2], // multi — in container
             vec![99],   // single — inline
-            vec![],     // empty — in container (count=0)
+            vec![],     // empty — inline (count=0)
         ];
 
         let ptv = ImmutablePointToValues::new(src);
 
         // Only values from multi-value points go into the container: [1, 2]
-        assert_eq!(ptv.values_container.len(), 2);
+        assert_eq!(ptv.values_container, [1, 2]);
 
         // Verify all values are correctly retrievable.
         assert_eq!(
