@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
@@ -6,16 +5,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use fs_err as fs;
-use fs_err::os::unix::fs::FileExt;
-#[cfg(target_os = "linux")]
-use fs_err::os::unix::fs::OpenOptionsExt;
 use memmap2::MmapRaw;
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Condvar, Mutex};
 use quick_cache::UnitWeighter;
 use quick_cache::sync::GuardResult;
 
 use super::{BLOCK_SIZE, BlockId, BlockOffset, BlockRequest, FileId};
 use crate::fs::clear_disk_cache;
+use crate::generic_consts::Random;
+use crate::universal_io::io_uring::IoUringFile;
+use crate::universal_io::{self, ReadRange, OpenOptions, UniversalRead};
 
 const UNUSED_BLOCKS_MARGIN: u64 = 16;
 
@@ -57,10 +56,9 @@ impl<const N: usize> DerefMut for AlignedBuf<N> {
 ///
 /// It only supports immutable files, so it does not handle dirty pages or manual eviction.
 #[derive(Debug)]
-pub struct CacheController {
+pub struct CacheController<SlowFile: UniversalRead<u8> = IoUringFile> {
     /// Mapping from the assigned file id, to its file descriptor
-    // TODO: use nested `impl UniversalRead` instead
-    files: RwLock<HashMap<FileId, fs::File>>,
+    files: papaya::HashMap<FileId, SlowFile>,
 
     /// Used to assign file ids on new files.
     file_id_counter: AtomicU32,
@@ -82,9 +80,9 @@ pub struct CacheController {
     cache_mmap: memmap2::MmapRaw,
 }
 
-impl CacheController {
+impl<SlowFile: UniversalRead<u8>> CacheController<SlowFile> {
     /// Create a new cache instance.
-    pub fn new(cache_path: &Path, size_bytes: u64) -> io::Result<Arc<CacheController>> {
+    pub fn new(cache_path: &Path, size_bytes: u64) -> io::Result<Arc<Self>> {
         let size_bytes = size_bytes.next_multiple_of(BLOCK_SIZE as u64);
         let size_blocks = size_bytes / BLOCK_SIZE as u64;
 
@@ -128,7 +126,7 @@ impl CacheController {
         );
 
         Ok(Arc::new(CacheController {
-            files: RwLock::new(HashMap::new()),
+            files: papaya::HashMap::new(),
             file_id_counter: AtomicU32::new(0),
             cache,
             blocks_lifecycle,
@@ -138,33 +136,29 @@ impl CacheController {
 
     /// Opens a new file, registers it with the cache, and returns its
     /// internal id and byte length.
-    pub(super) fn open_file(&self, path: &Path) -> io::Result<(FileId, usize)> {
+    pub(super) fn open_file(&self, path: &Path) -> universal_io::Result<(FileId, usize)> {
         // FIXME: clear_disk_cache is no-op on macos
         clear_disk_cache(path)?;
 
-        let mut opts = fs::File::options();
-        opts.read(true);
-        #[cfg(target_os = "linux")]
-        opts.custom_flags(nix::libc::O_DIRECT);
-        let f = opts.open(path)?;
-        #[cfg(target_os = "macos")]
-        {
-            // TODO: add this to `nix` crate
-            use std::os::fd::AsRawFd;
-            // SAFETY: valid fd and known fcntl command
-            let ret = unsafe { nix::libc::fcntl(f.as_raw_fd(), nix::libc::F_NOCACHE, 1) };
-            if ret == -1 {
-                return Err(io::Error::last_os_error());
-            }
-        }
+        let opts = OpenOptions {
+            writeable: false,
+            need_sequential: false,
+            disk_parallel: None,
+            populate: Some(false),
+            advice: None,
+            prevent_caching: Some(true),
+        };
 
-        let len = f.metadata()?.len() as usize;
+        let f = SlowFile::open(path, opts)?;
+
+        let len = f.len()? as usize;
 
         // TODO: this will wrap when we have > 4.29 billion files, what to do then?
         let file_id = self.file_id_counter.fetch_add(1, Ordering::SeqCst);
         let file_id = FileId(file_id);
 
-        self.files.write().insert(file_id, f);
+        self.files.pin().insert(file_id, f);
+
         Ok((file_id, len))
     }
 
@@ -177,7 +171,7 @@ impl CacheController {
         &self,
         req: BlockRequest,
         on_miss: impl FnOnce(&[u8]) -> O,
-    ) -> io::Result<CacheRead<'_, O>> {
+    ) -> universal_io::Result<CacheRead<'_, O>> {
         let BlockRequest { key, range } = req;
 
         match self.cache.get_value_or_guard(&key, None) {
@@ -201,23 +195,20 @@ impl CacheController {
                 // 1. Read from cold storage.
                 // --------------------------
 
-                let mut buf = AlignedBuf::<BLOCK_SIZE>::new();
+                // let mut buf = AlignedBuf::<BLOCK_SIZE>::new();
 
-                let files = self.files.read();
+                let files = self.files.pin();
                 let file = files
                     .get(&key.file_id)
                     .expect("cached file descriptor is not open");
-                if range.len() == BLOCK_SIZE {
-                    file.read_exact_at(&mut buf, key.offset.bytes() as u64)?;
-                } else {
-                    let bytes_read = file.read_at(&mut buf, key.offset.bytes() as u64)?;
-                    if bytes_read < range.len() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "short read from cold storage",
-                        ));
-                    }
-                }
+
+                let elem_range = ReadRange {
+                    byte_offset: key.offset.bytes() as u64,
+                    length: ((file.len()? as usize).saturating_sub(key.offset.bytes()))
+                        .min(BLOCK_SIZE) as u64,
+                };
+
+                let cow = file.read::<Random>(elem_range)?;
 
                 // 2. Write to hot storage.
                 // ------------------------
@@ -228,10 +219,12 @@ impl CacheController {
                 // SAFETY: non-overlapping regions are guaranteed by the block allocation logic;
                 // the insert guard prevent concurrent writes to the same block.
                 unsafe {
-                    self.cache_mmap
-                        .as_mut_ptr()
-                        .add(offset)
-                        .copy_from(buf.as_ptr(), BLOCK_SIZE);
+                    let dst = self.cache_mmap.as_mut_ptr().add(offset);
+                    let data_len = elem_range.length as usize;
+                    dst.copy_from(cow.as_ptr(), data_len);
+                    if data_len < BLOCK_SIZE {
+                        dst.add(data_len).write_bytes(0, BLOCK_SIZE - data_len);
+                    }
                 }
 
                 // 3. Commit.
@@ -240,7 +233,7 @@ impl CacheController {
                 // FIXME: unwrap panics when `key` deleted while guard is still alive.
                 guard.insert(allocated_offset).unwrap();
 
-                Ok(CacheRead::Miss(on_miss(&buf[range])))
+                Ok(CacheRead::Miss(on_miss(&cow[range])))
             }
             GuardResult::Timeout => unreachable!("We didn't set a timeout"),
         }
