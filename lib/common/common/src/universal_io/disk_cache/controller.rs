@@ -1,5 +1,5 @@
 use std::io;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -317,13 +317,11 @@ impl<SlowFile: UniversalRead<u8>> CacheController<SlowFile> {
             let mut ops = ops.collect_vec();
             let ranges = ops
                 .iter()
-                .map(|op| {
-                    ReadRange {
-                        byte_offset: op.req.key.offset.bytes() as u64,
-                        // Always request entire block, if we get to EOF, UniversalRead should return a short read.
-                        // We don't want to request less than this because O_DIRECT requires to be aligned to some block size
-                        length: BLOCK_SIZE as u64,
-                    }
+                .map(|op| ReadRange {
+                    byte_offset: op.req.key.offset.bytes() as u64,
+                    // Always request entire block, if we get to EOF, UniversalRead should return a short read.
+                    // We don't want to request less than this because O_DIRECT requires to be aligned to some block size
+                    length: BLOCK_SIZE as u64,
                 })
                 .enumerate()
                 .collect_vec();
