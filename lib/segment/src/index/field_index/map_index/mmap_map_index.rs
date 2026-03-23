@@ -11,7 +11,7 @@ use common::fs::{atomic_save_json, read_json};
 use common::mmap::create_and_ensure_length;
 use common::mmap_hashmap::{Key, MmapHashMap, READ_ENTRY_OVERHEAD};
 use common::types::PointOffsetType;
-use common::universal_io::{MmapFile, OpenOptions};
+use common::universal_io::{MmapFile, OpenOptions, StorageEnum};
 use fs_err as fs;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ pub struct MmapMapIndex<N: MapIndexKey + Key + ?Sized> {
 
 pub(super) struct Storage<N: MapIndexKey + Key + ?Sized> {
     pub(super) value_to_points: MmapHashMap<N, PointOffsetType>,
-    point_to_values: StoredPointToValues<N, MmapFile>,
+    point_to_values: StoredPointToValues<N, StorageEnum<u8>>,
     pub(super) deleted: BufferedUpdateBitSlice<MmapFile>,
 }
 
@@ -113,7 +113,7 @@ impl<N: MapIndexKey + Key + ?Sized> MmapMapIndex<N> {
                 .map(|(value, ids)| (value.borrow(), ids.iter().copied())),
         )?;
 
-        StoredPointToValues::<N, MmapFile>::from_iter(
+        StoredPointToValues::<N, StorageEnum<u8>>::from_iter(
             path,
             point_to_values.iter().enumerate().map(|(idx, values)| {
                 (

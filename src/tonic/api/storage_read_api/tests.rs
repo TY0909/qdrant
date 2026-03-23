@@ -61,6 +61,7 @@ fn test_storage_config(storage_path: &Path) -> StorageConfig {
             outgoing_shard_transfers_limit: Some(1),
             async_scorer: None,
             load_concurrency: LoadConcurrencyConfig::default(),
+            disk_cache: None,
         },
         hnsw_index: HnswConfig::default(),
         hnsw_global_config: HnswGlobalConfig::default(),

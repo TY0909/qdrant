@@ -16,7 +16,7 @@ mod controller;
 mod tests;
 
 pub use cached_slice::CachedSlice;
-use controller::CacheController;
+pub use controller::CacheController;
 
 /// We cache data in blocks of this size.
 /// Should be multiple of filesystem block size (usually 4 KiB).

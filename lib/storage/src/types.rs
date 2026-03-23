@@ -56,6 +56,15 @@ pub struct PerformanceConfig {
     pub async_scorer: Option<bool>,
     #[serde(default, flatten)]
     pub load_concurrency: LoadConcurrencyConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_cache: Option<DiskCacheConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Validate)]
+pub struct DiskCacheConfig {
+    #[validate(custom(function = validate_path))]
+    pub file: PathBuf,
+    pub size_mb: u64,
 }
 
 const fn default_io_shard_transfers_limit() -> Option<usize> {

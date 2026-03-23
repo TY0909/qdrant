@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use ::common::budget::{ResourceBudget, get_io_budget};
 use ::common::cpu::get_cpu_budget;
+#[cfg(target_os = "linux")]
+use ::common::universal_io::disk_cache::CacheController;
 use ::common::flags::{feature_flags, init_feature_flags};
 use ::common::fs::{FsCheckResult, check_fs_info, check_mmap_functionality};
 use ::common::mmap::MULTI_MMAP_SUPPORT_CHECK_RESULT;
@@ -185,6 +187,20 @@ fn main() -> anyhow::Result<()> {
             .async_scorer
             .unwrap_or_default(),
     );
+
+    if let Some(disk_cache) = settings.storage.performance.disk_cache.as_ref() {
+        #[cfg(target_os = "linux")]
+        {
+            let storage::types::DiskCacheConfig { file, size_mb } = disk_cache;
+            CacheController::initialize_global(file, *size_mb * 1024 * 1024);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            _ = disk_cache;
+            log::warn!("Disk cache is enabled, but not supported on this platform");
+        }
+    }
+
     welcome(&settings);
 
     // If audit logging is enabled, but failed to initialize,
