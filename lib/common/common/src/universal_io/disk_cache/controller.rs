@@ -309,7 +309,7 @@ impl<SlowFile: UniversalRead<u8>> CacheController<SlowFile> {
         // We expect usage to be batched for a single file at a time anyway, but chunk to be sure.
         let per_file = misses.into_iter().chunk_by(|op| op.req.key.file_id);
 
-        for (file_id, ops) in per_file.into_iter() {
+        for (file_id, ops) in &per_file {
             let file = files
                 .get(&file_id)
                 .expect("cached file descriptor is not open");
