@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 use fs_err as fs;
 use itertools::Itertools;
-use memmap2::MmapRaw;
+use memmap2::{Advice, MmapRaw};
 use parking_lot::{Condvar, Mutex};
 use quick_cache::UnitWeighter;
 use quick_cache::sync::{GuardResult, PlaceholderGuard};
@@ -99,7 +99,21 @@ impl<SlowFile: UniversalRead<u8>> CacheController<SlowFile> {
 
         cache_file.set_len(size_bytes)?;
 
+        // Actually allocate disk blocks instead of creating a sparse file.
+        // Writing to mmap pages backed by unallocated blocks causes SIGBUS
+        // when the filesystem is out of space.
+        #[cfg(target_os = "linux")]
+        nix::fcntl::fallocate(
+            &cache_file,
+            nix::fcntl::FallocateFlags::empty(),
+            0,
+            size_bytes as i64,
+        )
+        .map_err(io::Error::from)?;
+
         let cache_mmap = MmapRaw::map_raw(&cache_file)?;
+
+        cache_mmap.advise(Advice::HugePage)?;
 
         let size_blocks_u32: u32 = size_blocks.try_into().map_err(|_| {
             io::Error::new(
