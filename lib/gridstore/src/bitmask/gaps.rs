@@ -108,7 +108,7 @@ impl<S: UniversalWrite<RegionGaps>> BitmaskGaps<S> {
             disk_parallel: None,
             populate: Some(true),
             advice: None,
-            prevent_caching: None
+            prevent_caching: None,
         };
         let mut slice_store = S::open(&path, options)?;
 
@@ -131,7 +131,7 @@ impl<S: UniversalWrite<RegionGaps>> BitmaskGaps<S> {
             disk_parallel: None,
             populate: Some(false),
             advice: Some(AdviceSetting::Advice(Advice::Normal)),
-            prevent_caching: None
+            prevent_caching: None,
         };
         let slice_store = S::open(&path, options)?;
 
@@ -166,7 +166,7 @@ impl<S: UniversalWrite<RegionGaps>> BitmaskGaps<S> {
             disk_parallel: None,
             populate: Some(false),
             advice: Some(AdviceSetting::Advice(Advice::Normal)),
-            prevent_caching: None
+            prevent_caching: None,
         };
         self.slice_store = S::open(&self.path, options)?;
 
@@ -288,9 +288,7 @@ impl<S: UniversalWrite<RegionGaps>> BitmaskGaps<S> {
                     + (window_size - 2) * self.config.region_size_blocks;
 
                 if merged_gap as u32 >= num_blocks {
-                    Some(
-                        start_region_id as RegionId..(start_region_id + window_size) as RegionId,
-                    )
+                    Some(start_region_id as RegionId..(start_region_id + window_size) as RegionId)
                 } else {
                     None
                 }
@@ -301,14 +299,14 @@ impl<S: UniversalWrite<RegionGaps>> BitmaskGaps<S> {
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod tests {
-    use common::universal_io::MmapUniversalRw;
+    use common::universal_io::MmapFile;
     use proptest::prelude::*;
     use tempfile::tempdir;
 
     use super::*;
     use crate::config::{DEFAULT_REGION_SIZE_BLOCKS, StorageOptions};
 
-    pub type MmapBitmaskGaps = BitmaskGaps<MmapUniversalRw<RegionGaps>>;
+    pub type MmapBitmaskGaps = BitmaskGaps<MmapFile>;
 
     prop_compose! {
         fn arbitrary_region_gaps(region_size_blocks: u16)(
@@ -468,7 +466,12 @@ mod tests {
 
         // Find space for blocks covering up to 2 regions
         assert!(bitmask_gaps.find_fitting_gap(1).unwrap().is_some());
-        assert!(bitmask_gaps.find_fitting_gap(REGION_SIZE_BLOCKS).unwrap().is_some());
+        assert!(
+            bitmask_gaps
+                .find_fitting_gap(REGION_SIZE_BLOCKS)
+                .unwrap()
+                .is_some()
+        );
         assert!(
             bitmask_gaps
                 .find_fitting_gap(REGION_SIZE_BLOCKS * 2)
@@ -512,7 +515,12 @@ mod tests {
             BitmaskGaps::create(temp_dir.path(), gaps.clone().into_iter(), config.clone()).unwrap();
 
         // Find space for blocks covering up to 2 regions
-        assert!(bitmask_gaps.find_fitting_gap(REGION_SIZE_BLOCKS).unwrap().is_some());
+        assert!(
+            bitmask_gaps
+                .find_fitting_gap(REGION_SIZE_BLOCKS)
+                .unwrap()
+                .is_some()
+        );
         assert!(
             bitmask_gaps
                 .find_fitting_gap(REGION_SIZE_BLOCKS * 2)
@@ -560,7 +568,12 @@ mod tests {
             BitmaskGaps::create(temp_dir.path(), gaps.clone().into_iter(), config).unwrap();
 
         // Find space for blocks covering more than 1 to 1.5 regions
-        assert!(bitmask_gaps.find_fitting_gap(REGION_SIZE_BLOCKS).unwrap().is_some());
+        assert!(
+            bitmask_gaps
+                .find_fitting_gap(REGION_SIZE_BLOCKS)
+                .unwrap()
+                .is_some()
+        );
         assert!(
             bitmask_gaps
                 .find_fitting_gap(REGION_SIZE_BLOCKS + 1)
@@ -615,7 +628,12 @@ mod tests {
             BitmaskGaps::create(temp_dir.path(), gaps.clone().into_iter(), config).unwrap();
 
         // Find space for blocks covering up to 1.5 region
-        assert!(bitmask_gaps.find_fitting_gap(REGION_SIZE_BLOCKS).unwrap().is_some());
+        assert!(
+            bitmask_gaps
+                .find_fitting_gap(REGION_SIZE_BLOCKS)
+                .unwrap()
+                .is_some()
+        );
         assert!(
             bitmask_gaps
                 .find_fitting_gap(REGION_SIZE_BLOCKS + 1)
