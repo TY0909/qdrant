@@ -120,7 +120,7 @@ impl GraphLinksView<'_> {
 
     fn load_plain(data: &[u8]) -> OperationResult<GraphLinksView<'_>> {
         let (header, data) =
-            HeaderPlain::ref_from_prefix(data).map_err(|_| error_unsufficent_size())?;
+            HeaderPlain::ref_from_prefix(data).map_err(|_| error_insufficent_size())?;
         let (level_offsets, data) =
             read_level_offsets(data, header.levels_count, header.total_offset_count)?;
         let (reindex, data) = get_slice::<PointOffsetType>(data, header.point_count)?;
@@ -136,7 +136,7 @@ impl GraphLinksView<'_> {
 
     fn load_compressed(data: &[u8]) -> OperationResult<GraphLinksView<'_>> {
         let (header, data) =
-            HeaderCompressed::ref_from_prefix(data).map_err(|_| error_unsufficent_size())?;
+            HeaderCompressed::ref_from_prefix(data).map_err(|_| error_insufficent_size())?;
         debug_assert_eq!(header.version.get(), HEADER_VERSION_COMPRESSED);
         let (level_offsets, data) = read_level_offsets(
             data,
@@ -169,7 +169,7 @@ impl GraphLinksView<'_> {
         let total_len = data.len();
 
         let (header, data) = HeaderCompressedWithVectors::ref_from_prefix(data)
-            .map_err(|_| error_unsufficent_size())?;
+            .map_err(|_| error_insufficent_size())?;
         debug_assert_eq!(header.version.get(), HEADER_VERSION_COMPRESSED_WITH_VECTORS);
 
         let base_vector_layout = header.base_vector_layout.try_into_layout()?;
@@ -399,9 +399,9 @@ fn read_level_offsets(
 }
 
 fn get_slice<T: FromBytes + Immutable>(data: &[u8], length: u64) -> OperationResult<(&[T], &[u8])> {
-    <[T]>::ref_from_prefix_with_elems(data, length as usize).map_err(|_| error_unsufficent_size())
+    <[T]>::ref_from_prefix_with_elems(data, length as usize).map_err(|_| error_insufficent_size())
 }
 
-fn error_unsufficent_size() -> OperationError {
-    OperationError::service_error("Unsufficent file size for GraphLinks file")
+fn error_insufficent_size() -> OperationError {
+    OperationError::service_error("Insufficent file size for GraphLinks file")
 }
