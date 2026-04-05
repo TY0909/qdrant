@@ -366,6 +366,8 @@ enum TurboQuantCorrection {
   NoCorrection = 1;
   Qjl = 2;
   QjlNormalization = 3;
+  QjlShort = 4;
+  QjlShortNormalization = 5;
 }
 
 enum TurboQuantRotation {

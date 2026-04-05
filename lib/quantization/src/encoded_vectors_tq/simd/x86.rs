@@ -18,13 +18,11 @@ use super::{SimdCodebook2, SimdCodebook4, SimdQuery1, SimdQuery2, SimdQuery4};
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn hsum_i64_avx2(acc: __m256i) -> i64 {
-    unsafe {
-        let lo128 = _mm256_castsi256_si128(acc);
-        let hi128 = _mm256_extracti128_si256(acc, 1);
-        let sum128 = _mm_add_epi64(lo128, hi128);
-        let hi64 = _mm_srli_si128(sum128, 8);
-        _mm_cvtsi128_si64(_mm_add_epi64(sum128, hi64))
-    }
+    let lo128 = _mm256_castsi256_si128(acc);
+    let hi128 = _mm256_extracti128_si256(acc, 1);
+    let sum128 = _mm_add_epi64(lo128, hi128);
+    let hi64 = _mm_srli_si128(sum128, 8);
+    _mm_cvtsi128_si64(_mm_add_epi64(sum128, hi64))
 }
 
 /// Horizontal sum of 4 i64 lanes in 2 × __m128i.
@@ -32,11 +30,9 @@ unsafe fn hsum_i64_avx2(acc: __m256i) -> i64 {
 #[target_feature(enable = "ssse3")]
 #[inline]
 unsafe fn hsum_i64_sse(acc_0: __m128i, acc_1: __m128i) -> i64 {
-    unsafe {
-        let total = _mm_add_epi64(acc_0, acc_1);
-        let hi = _mm_srli_si128(total, 8);
-        _mm_cvtsi128_si64(_mm_add_epi64(total, hi))
-    }
+    let total = _mm_add_epi64(acc_0, acc_1);
+    let hi = _mm_srli_si128(total, 8);
+    _mm_cvtsi128_si64(_mm_add_epi64(total, hi))
 }
 
 /// Widen 4 × i32 → 4 × i64 (SSE2 sign extension) and add to two i64 accumulators.
@@ -44,11 +40,9 @@ unsafe fn hsum_i64_sse(acc_0: __m128i, acc_1: __m128i) -> i64 {
 #[target_feature(enable = "ssse3")]
 #[inline]
 unsafe fn widen_add_i32_to_i64_sse(prod: __m128i, acc_0: &mut __m128i, acc_1: &mut __m128i) {
-    unsafe {
-        let sign = _mm_srai_epi32(prod, 31);
-        *acc_0 = _mm_add_epi64(*acc_0, _mm_unpacklo_epi32(prod, sign));
-        *acc_1 = _mm_add_epi64(*acc_1, _mm_unpackhi_epi32(prod, sign));
-    }
+    let sign = _mm_srai_epi32(prod, 31);
+    *acc_0 = _mm_add_epi64(*acc_0, _mm_unpacklo_epi32(prod, sign));
+    *acc_1 = _mm_add_epi64(*acc_1, _mm_unpackhi_epi32(prod, sign));
 }
 
 /// Extract nibble indices from packed bytes into a 128-bit register.
@@ -401,10 +395,10 @@ pub unsafe fn and_popcount_u16_x86(packed: &[u8], query: &SimdQuery1) -> (u64, u
         let mut popcnt_v = 0u32;
         for chunk in 0..query.num_chunks {
             let v = *(packed.as_ptr().add(chunk * 8) as *const u64);
-            popcnt_v += _popcnt_u64(v) as u32;
+            popcnt_v += _popcnt64(v as i64) as u32;
             let base = chunk * 16;
             for b in 0..16u64 {
-                s1 += (_popcnt_u64(v & query.planes[base + b as usize]) as u64) << b;
+                s1 += (_popcnt64((v & query.planes[base + b as usize]) as i64) as u64) << b;
             }
         }
         (s1, popcnt_v)
@@ -427,7 +421,7 @@ pub unsafe fn xor_popcount_x86(packed1: &[u8], packed2: &[u8], num_bytes: usize)
             let off = i * 8;
             let a = *(packed1.as_ptr().add(off) as *const u64);
             let b = *(packed2.as_ptr().add(off) as *const u64);
-            count += _popcnt_u64(a ^ b) as u32;
+            count += _popcnt64((a ^ b) as i64) as u32;
         }
         for i in (num_u64 * 8)..num_bytes {
             count += (*packed1.as_ptr().add(i) ^ *packed2.as_ptr().add(i)).count_ones();
