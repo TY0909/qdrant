@@ -172,6 +172,7 @@ impl StructPayloadIndex {
                 field,
                 &payload_schema.schema,
                 create_if_missing,
+                &self.id_tracker.borrow(),
             )?;
 
             if let Some(mut indexes) = indexes {
@@ -202,6 +203,7 @@ impl StructPayloadIndex {
                 vec![]
             }
         } else {
+            let id_tracker_borrow = self.id_tracker.borrow();
             payload_schema
                 .types
                 .iter()
@@ -215,6 +217,7 @@ impl StructPayloadIndex {
                             &self.path,
                             total_point_count,
                             create_if_missing,
+                            &id_tracker_borrow,
                         )
                     })
                 })

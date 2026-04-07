@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use gridstore::Blob;
 
 use super::bool_index::BoolIndex;
+use super::bool_index::immutable_bool_index::ImmutableBoolIndex;
 use super::bool_index::mutable_bool_index::MutableBoolIndex;
 use super::geo_index::{GeoMapIndexGridstoreBuilder, GeoMapIndexMmapBuilder};
 use super::histogram::Numericable;
@@ -14,6 +15,7 @@ use super::stored_point_to_values::StoredValue;
 use super::{FieldIndexBuilder, ValueIndexer};
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::index::TextIndexParams;
+use crate::id_tracker::{IdTracker, IdTrackerEnum};
 use crate::index::field_index::FieldIndex;
 use crate::index::field_index::full_text_index::text_index::FullTextIndex;
 use crate::index::field_index::geo_index::GeoMapIndex;
@@ -45,6 +47,7 @@ pub struct IndexSelectorGridstore<'a> {
 
 impl IndexSelector<'_> {
     /// Loads the correct index based on `index_type`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_index_with_type(
         &self,
         field: &JsonPath,
@@ -53,6 +56,7 @@ impl IndexSelector<'_> {
         path: &Path,
         total_point_count: usize,
         create_if_missing: bool,
+        id_tracker: &IdTrackerEnum,
     ) -> OperationResult<Option<FieldIndex>> {
         let index = match (&index_type.index_type, payload_schema.expand().as_ref()) {
             (PayloadIndexType::IntIndex, PayloadSchemaParams::Integer(params)) => {
@@ -104,7 +108,7 @@ impl IndexSelector<'_> {
                 .map(FieldIndex::FullTextIndex),
 
             (PayloadIndexType::BoolIndex, PayloadSchemaParams::Bool(_)) => self
-                .bool_new(field, create_if_missing)?
+                .bool_new(field, create_if_missing, id_tracker)?
                 .map(FieldIndex::BoolIndex),
 
             (PayloadIndexType::UuidIndex, PayloadSchemaParams::Uuid(_)) => self
@@ -139,6 +143,7 @@ impl IndexSelector<'_> {
         field: &JsonPath,
         payload_schema: &PayloadFieldSchema,
         create_if_missing: bool,
+        id_tracker: &IdTrackerEnum,
     ) -> OperationResult<Option<Vec<FieldIndex>>> {
         let indexes = match payload_schema.expand().as_ref() {
             PayloadSchemaParams::Keyword(_) => self
@@ -177,7 +182,7 @@ impl IndexSelector<'_> {
                 .text_new(field, text_index_params.clone(), create_if_missing)?
                 .map(|index| vec![FieldIndex::FullTextIndex(index)]),
             PayloadSchemaParams::Bool(_) => self
-                .bool_new(field, create_if_missing)?
+                .bool_new(field, create_if_missing, id_tracker)?
                 .map(|index| vec![FieldIndex::BoolIndex(index)]),
             PayloadSchemaParams::Datetime(_) => self
                 .numeric_new(field, create_if_missing)?
@@ -433,16 +438,16 @@ impl IndexSelector<'_> {
         match self {
             IndexSelector::Mmap(IndexSelectorMmap { dir, is_on_disk: _ }) => {
                 let dir = bool_dir(dir, field);
-                Ok(FieldIndexBuilder::BoolMmapIndex(MutableBoolIndex::builder(
-                    &dir,
-                )?))
+                Ok(FieldIndexBuilder::BoolMmapIndex(
+                    ImmutableBoolIndex::builder(&dir)?,
+                ))
             }
             // Skip Gridstore for boolean index, mmap index is simpler and is also mutable
             IndexSelector::Gridstore(IndexSelectorGridstore { dir }) => {
                 let dir = bool_dir(dir, field);
-                Ok(FieldIndexBuilder::BoolMmapIndex(MutableBoolIndex::builder(
-                    &dir,
-                )?))
+                Ok(FieldIndexBuilder::BoolGridstoreIndex(
+                    MutableBoolIndex::builder(&dir)?,
+                ))
             }
         }
     }
@@ -451,11 +456,13 @@ impl IndexSelector<'_> {
         &self,
         field: &JsonPath,
         create_if_missing: bool,
+        id_tracker: &IdTrackerEnum,
     ) -> OperationResult<Option<BoolIndex>> {
         Ok(match self {
             IndexSelector::Mmap(IndexSelectorMmap { dir, is_on_disk: _ }) => {
                 let dir = bool_dir(dir, field);
-                MutableBoolIndex::open(&dir, create_if_missing)?.map(BoolIndex::Mmap)
+                ImmutableBoolIndex::open(&dir, id_tracker.deleted_point_bitslice())?
+                    .map(BoolIndex::Immutable)
             }
             // Skip Gridstore for boolean index, mmap index is simpler and is also mutable
             IndexSelector::Gridstore(IndexSelectorGridstore { dir }) => {
