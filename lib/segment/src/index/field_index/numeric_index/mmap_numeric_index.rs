@@ -10,7 +10,7 @@ use common::fs::{atomic_save_json, clear_disk_cache, read_json};
 use common::mmap;
 use common::mmap::{AdviceSetting, MmapSlice, create_and_ensure_length};
 use common::types::PointOffsetType;
-use common::universal_io::{MmapFile, UniversalRead};
+use common::universal_io::{MmapFile, OpenOptions, UniversalRead};
 use fs_err as fs;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
@@ -19,11 +19,13 @@ use super::Encodable;
 use super::mutable_numeric_index::InMemoryNumericIndex;
 use crate::common::Flusher;
 use crate::common::operation_error::{OperationError, OperationResult};
+use crate::common::stored_bitslice::MmapBitSlice;
 use crate::id_tracker::{IdTracker, IdTrackerEnum};
 use crate::index::field_index::histogram::{Histogram, Numericable, Point};
 use crate::index::field_index::stored_point_to_values::{StoredPointToValues, StoredValue};
 
 const PAIRS_PATH: &str = "data.bin";
+const DELETED_PATH: &str = "deleted.bin";
 const CONFIG_PATH: &str = "mmap_field_index_config.json";
 
 pub struct MmapNumericIndex<T: Encodable + Numericable + Default + StoredValue + 'static> {
@@ -99,6 +101,7 @@ impl<T: Encodable + Numericable + Default + StoredValue> MmapNumericIndex<T> {
         fs::create_dir_all(path)?;
 
         let pairs_path = path.join(PAIRS_PATH);
+        let deleted_path = path.join(DELETED_PATH);
         let config_path = path.join(CONFIG_PATH);
 
         atomic_save_json(
@@ -131,6 +134,27 @@ impl<T: Encodable + Numericable + Default + StoredValue> MmapNumericIndex<T> {
             }
         }
 
+        {
+            let deleted_flags_count = in_memory_index.point_to_values.len();
+            let _ = create_and_ensure_length(
+                &deleted_path,
+                deleted_flags_count
+                    .div_ceil(u8::BITS as usize)
+                    .next_multiple_of(size_of::<u64>()),
+            )?;
+
+            let mut deleted = MmapBitSlice::open(&deleted_path, OpenOptions::default())?;
+            deleted.set_ascending_bits_batch(
+                in_memory_index
+                    .point_to_values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, values)| values.is_empty())
+                    .map(|(idx, _)| (idx as u64, true)),
+            )?;
+            deleted.flusher()()?;
+        }
+
         Self::open(path, is_on_disk, id_tracker)?.ok_or_else(|| {
             OperationError::service_error("Failed to open MmapNumericIndex after building it")
         })
@@ -143,6 +167,7 @@ impl<T: Encodable + Numericable + Default + StoredValue> MmapNumericIndex<T> {
         id_tracker: &IdTrackerEnum,
     ) -> OperationResult<Option<Self>> {
         let pairs_path = path.join(PAIRS_PATH);
+        let deleted_path = path.join(DELETED_PATH);
         let config_path = path.join(CONFIG_PATH);
 
         // If config doesn't exist, assume the index doesn't exist on disk
@@ -162,12 +187,12 @@ impl<T: Encodable + Numericable + Default + StoredValue> MmapNumericIndex<T> {
         };
         let point_to_values = StoredPointToValues::open(path, do_populate)?;
 
-        let mut deleted = BitVec::repeat(false, point_to_values.len());
-        for idx in 0..point_to_values.len() {
-            let deleted_payload = point_to_values.get_values_count(idx as _)?.unwrap_or(0) == 0;
-            let deleted_point = id_tracker.is_deleted_point(idx as PointOffsetType);
-            if deleted_payload || deleted_point {
-                deleted.set(idx, true);
+        let deleted_mmap = MmapBitSlice::open(&deleted_path, OpenOptions::default())?;
+        let mut deleted = id_tracker.deleted_point_bitslice().to_owned();
+        for idx in 0..deleted_mmap.element_len() {
+            let deleted_payload = deleted_mmap.get_bit(idx)?.unwrap_or(false);
+            if deleted_payload {
+                deleted.set(idx as usize, true);
             }
         }
         let deleted_count = deleted.count_ones();
@@ -199,14 +224,22 @@ impl<T: Encodable + Numericable + Default + StoredValue> MmapNumericIndex<T> {
     }
 
     pub fn files(&self) -> Vec<PathBuf> {
-        let mut files = vec![self.path.join(PAIRS_PATH), self.path.join(CONFIG_PATH)];
+        let mut files = vec![
+            self.path.join(PAIRS_PATH),
+            self.path.join(DELETED_PATH),
+            self.path.join(CONFIG_PATH),
+        ];
         files.extend(self.storage.point_to_values.files());
         files.extend(Histogram::<T>::files(&self.path));
         files
     }
 
     pub fn immutable_files(&self) -> Vec<PathBuf> {
-        let mut files = vec![self.path.join(PAIRS_PATH), self.path.join(CONFIG_PATH)];
+        let mut files = vec![
+            self.path.join(PAIRS_PATH),
+            self.path.join(DELETED_PATH),
+            self.path.join(CONFIG_PATH),
+        ];
         files.extend(self.storage.point_to_values.immutable_files());
         files.extend(Histogram::<T>::immutable_files(&self.path));
         files
@@ -386,8 +419,10 @@ impl<T: Encodable + Numericable + Default + StoredValue> MmapNumericIndex<T> {
     /// Drop disk cache.
     pub fn clear_cache(&self) -> OperationResult<()> {
         let pairs_path = self.path.join(PAIRS_PATH);
+        let deleted_path = self.path.join(DELETED_PATH);
 
         clear_disk_cache(&pairs_path)?;
+        clear_disk_cache(&deleted_path)?;
 
         self.storage.point_to_values.clear_cache()?;
 
