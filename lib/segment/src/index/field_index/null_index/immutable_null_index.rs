@@ -8,17 +8,15 @@ use delegate::delegate;
 use super::mutable_null_index::MutableNullIndex;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::index::field_index::{FieldIndexBuilderTrait, PayloadFieldIndex};
+use crate::index::payload_config::StorageType;
 use crate::telemetry::PayloadIndexTelemetry;
 
 pub struct ImmutableNullIndex(MutableNullIndex);
 
 impl ImmutableNullIndex {
-    pub fn builder(
-        path: &Path,
-        total_point_count: usize,
-    ) -> OperationResult<ImmutableNullIndexBuilder> {
+    pub fn builder(path: &Path) -> OperationResult<ImmutableNullIndexBuilder> {
         Ok(ImmutableNullIndexBuilder(
-            MutableNullIndex::open(path, total_point_count, true)?.ok_or_else(|| {
+            MutableNullIndex::open(path, 0, true)?.ok_or_else(|| {
                 OperationError::service_error("Failed to create and open MutableNullIndex")
             })?,
         ))
@@ -39,7 +37,8 @@ impl ImmutableNullIndex {
 
     #[inline]
     pub fn remove_point(&mut self, id: PointOffsetType) -> OperationResult<()> {
-        self.0.remove_point_immutable(id)
+        self.0.remove_point_immutable(id);
+        Ok(())
     }
 }
 
@@ -47,6 +46,7 @@ impl ImmutableNullIndex {
     // N.B.: these operations are immutable.
     delegate! {
         to self.0 {
+            // TODO telemetry should overwrite a text tag.
             pub fn get_telemetry_data(&self) -> PayloadIndexTelemetry;
             pub fn values_count(&self, point_id: PointOffsetType) -> usize;
             pub fn values_is_empty(&self, id: PointOffsetType) -> bool;
@@ -54,6 +54,7 @@ impl ImmutableNullIndex {
             pub fn is_on_disk(&self) -> bool;
             pub fn populate(&self) -> OperationResult<()>;
             pub fn clear_cache(&self) -> OperationResult<()>;
+            pub fn get_storage_type(&self) -> StorageType;
         }
     }
 }
@@ -125,14 +126,14 @@ mod tests {
     use serde_json::{Value, json};
     use tempfile::TempDir;
 
-    use crate::{json_path::JsonPath, types::FieldCondition};
-
     use super::*;
+    use crate::json_path::JsonPath;
+    use crate::types::FieldCondition;
 
     #[test]
     fn test_remove_idempotent() {
         let dir = TempDir::with_prefix("test_immutable_null_index").unwrap();
-        let mut builder = ImmutableNullIndex::builder(dir.path(), 0).unwrap();
+        let mut builder = ImmutableNullIndex::builder(dir.path()).unwrap();
         let hw_counter = HardwareCounterCell::new();
 
         let null_value = Value::Null;
@@ -203,7 +204,6 @@ mod tests {
                 .exp,
             2,
         );
-
 
         index.remove_point(1).unwrap();
         assert_eq!(
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn test_remove_reopen() {
         let dir = TempDir::with_prefix("test_immutable_null_index").unwrap();
-        let mut builder = ImmutableNullIndex::builder(dir.path(), 0).unwrap();
+        let mut builder = ImmutableNullIndex::builder(dir.path()).unwrap();
         let hw_counter = HardwareCounterCell::new();
         builder.add_point(0, &[&json!(true)], &hw_counter).unwrap();
         builder.add_point(1, &[&json!(true)], &hw_counter).unwrap();
