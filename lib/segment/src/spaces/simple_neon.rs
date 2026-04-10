@@ -42,7 +42,7 @@ pub(crate) unsafe fn euclid_similarity_neon(
             ptr2 = ptr2.add(16);
             i += 16;
         }
-        let mut result = vaddvq_f32(sum1) + vaddvq_f32(sum2) + vaddvq_f32(sum3) + vaddvq_f32(sum4);
+        let mut result = vaddvq_f32(vaddq_f32(vaddq_f32(sum1, sum2), vaddq_f32(sum3, sum4)));
         for i in 0..n - m {
             result += (*ptr1.add(i) - *ptr2.add(i)).powi(2);
         }
@@ -83,7 +83,7 @@ pub(crate) unsafe fn manhattan_similarity_neon(
             ptr2 = ptr2.add(16);
             i += 16;
         }
-        let mut result = vaddvq_f32(sum1) + vaddvq_f32(sum2) + vaddvq_f32(sum3) + vaddvq_f32(sum4);
+        let mut result = vaddvq_f32(vaddq_f32(vaddq_f32(sum1, sum2), vaddq_f32(sum3, sum4)));
         for i in 0..n - m {
             result += (*ptr1.add(i) - *ptr2.add(i)).abs();
         }
@@ -186,7 +186,7 @@ pub(crate) unsafe fn dot_similarity_neon(
             ptr2 = ptr2.add(16);
             i += 16;
         }
-        let mut result = vaddvq_f32(sum1) + vaddvq_f32(sum2) + vaddvq_f32(sum3) + vaddvq_f32(sum4);
+        let mut result = vaddvq_f32(vaddq_f32(vaddq_f32(sum1, sum2), vaddq_f32(sum3, sum4)));
         for i in 0..n - m {
             result += (*ptr1.add(i)) * (*ptr2.add(i));
         }
