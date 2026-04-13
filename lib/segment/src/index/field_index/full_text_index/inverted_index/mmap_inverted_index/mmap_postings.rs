@@ -56,7 +56,7 @@ pub(in crate::index::field_index::full_text_index) struct PostingListHeader {
     ids_data_bytes_count: u32,
     /// Length in bytes for the alignment bytes
     alignment_bytes_count: u8,
-    /// Length in bytes for the remainder postings
+    /// Number of `RemainderPosting` elements (tail that doesn't fill a chunk)
     remainder_count: u8,
 
     _reserved: [u8; 2],
@@ -78,10 +78,66 @@ impl PostingListHeader {
 
 /// MmapPostings Structure on disk:
 ///
+/// ```text
+/// offset 0
+/// ┌────────────────────────────────────────────────┐
+/// │ PostingsHeader                                 │  size_of::<PostingsHeader>()
+/// │   posting_count: usize    (one per term)       │  = 8 + 32 = 40 bytes
+/// │   _reserved: [u8; 32]                          │
+/// ├────────────────────────────────────────────────┤
+/// │ PostingListHeader[0]   ── token_id 0           │  each
+/// │ PostingListHeader[1]   ── token_id 1           │  size_of::<PostingListHeader>()
+/// │ ...                                            │  = 24 bytes
+/// │ PostingListHeader[N-1] ── token_id N-1         │
+/// ├────────────────────────────────────────────────┤
+/// │ CompressedMmapPostingList[0]                   │  variable
+/// │ CompressedMmapPostingList[1]                   │  size; located via
+/// │ ...                                            │  header.offset
+/// │ CompressedMmapPostingList[N-1]                 │
+/// └────────────────────────────────────────────────┘
+/// ```
 ///
-/// `| PostingsHeader |
-/// [ PostingListHeader, PostingListHeader, ... ] |
-/// [ CompressedMmapPostingList, CompressedMmapPostingList, ... ] |`
+/// `get_header(token_id)` indexes the middle array directly:
+/// `size_of::<PostingsHeader>() + token_id * size_of::<PostingListHeader>()`.
+/// Each [`PostingListHeader`] then points (via absolute `offset`) into the
+/// third region.
+///
+/// One `CompressedMmapPostingList` (parsed by `get_view`):
+///
+/// ```text
+/// header.offset ─►
+/// ┌──────────────────────────────────────────────┐
+/// │ last_doc_id : PointOffsetType (u32)          │  4 B
+/// ├──────────────────────────────────────────────┤
+/// │ chunks: [PostingChunk<Sized<V>>;             │  chunks_count *
+/// │          chunks_count]                       │  size_of::<PostingChunk>
+/// │   each chunk = (initial_id, sized_value,     │
+/// │                 offset into id_data)         │
+/// ├──────────────────────────────────────────────┤
+/// │ id_data: [u8; ids_data_bytes_count]          │  bit-packed deltas for
+/// │                                              │  CHUNK_LEN ids per chunk
+/// ├──────────────────────────────────────────────┤
+/// │ var_size_data: [u8; var_size_data_bytes]     │  optional (Positions);
+/// │                                              │  empty for V = ()
+/// ├──────────────────────────────────────────────┤
+/// │ alignment: [0u8; alignment_bytes_count]      │  pad so next region is
+/// │                                              │  4-byte aligned
+/// ├──────────────────────────────────────────────┤
+/// │ remainders:[RemainderPosting<Sized<V>>;      │  tail < CHUNK_LEN ids
+/// │             remainder_count]                 │  stored uncompressed
+/// └──────────────────────────────────────────────┘
+/// ```
+///
+/// The alignment slot exists because `id_data` + `var_size_data` are byte
+/// streams of arbitrary length, but `RemainderPosting` is `#[repr(C)]` and
+/// read via zerocopy, so its start needs 4-byte alignment.
+///
+/// Two flavors of `V`:
+/// - `V = ()` — ids-only postings; `var_size_data` is empty and
+///   `SizedTypeFor<V>` is zero-sized.
+/// - `V = Positions` — phrase index; per-doc token positions live in
+///   `var_size_data`, with each `PostingChunk` / `RemainderPosting` carrying
+///   a `Sized` handle (offset/len) into that blob.
 pub struct MmapPostings<V: MmapPostingValue> {
     _path: PathBuf,
     mmap: Mmap,
