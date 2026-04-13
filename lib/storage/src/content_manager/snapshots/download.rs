@@ -2,14 +2,15 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use common::tempfile_ext::MaybeTempPath;
+use fs_err as fs;
 use fs_err::tokio as tokio_fs;
 use futures::StreamExt;
+use reqwest;
 use segment::common::BYTES_IN_MB;
 use tap::Tap;
 use tempfile::TempPath;
 use tokio::io::AsyncWriteExt;
 use url::Url;
-use {fs_err as fs, reqwest};
 
 use crate::StorageError;
 
