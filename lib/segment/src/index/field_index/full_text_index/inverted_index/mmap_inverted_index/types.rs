@@ -1,24 +1,23 @@
 use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
 use common::types::PointOffsetType;
 use posting_list::{PostingChunk, PostingValue, RemainderPosting, SizedTypeFor, ValueHandler};
-use std::fmt::Debug;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub const ALIGNMENT: usize = 4;
 
-/// Trait marker to enrich [`posting_list::PostingValue`] for handling mmap files with the posting list.
-pub(in crate::index::field_index::full_text_index) trait PersistedPostingValue:
+/// A [`PostingValue`] whose sized payload can be zerocopy-read from an mmap.
+pub(in crate::index::field_index::full_text_index) trait ZerocopyPostingValue:
     PostingValue<
-    Handler: ValueHandler<Sized: FromBytes + Immutable + IntoBytes + KnownLayout + Unaligned>
-                 + Clone
-                 + Debug,
->
+        Handler: ValueHandler<
+            Sized: FromBytes + IntoBytes + Immutable + KnownLayout + Unaligned,
+        >,
+    >
 {
 }
 
-impl PersistedPostingValue for () {}
+impl ZerocopyPostingValue for () {}
 
-impl PersistedPostingValue for Positions {}
+impl ZerocopyPostingValue for Positions {}
 
 #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
 #[repr(C)]

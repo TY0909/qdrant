@@ -25,7 +25,7 @@ use common::types::PointOffsetType;
 use common::universal_io::{MmapFile, OpenOptions};
 use itertools::Either;
 use mmap_postings::MmapPostings;
-use types::PersistedPostingValue;
+use types::ZerocopyPostingValue;
 
 pub(super) mod mmap_postings;
 pub mod mmap_postings_enum;
@@ -195,7 +195,7 @@ impl MmapInvertedIndex {
         // in case of mmap immutable index, deleted points are still in the postings
         let filter = move |idx| self.is_active(idx);
 
-        fn intersection<'a, V: PersistedPostingValue>(
+        fn intersection<'a, V: ZerocopyPostingValue>(
             postings: &'a MmapPostings<V>,
             tokens: TokenSet,
             filter: impl Fn(u32) -> bool + 'a,
@@ -236,7 +236,7 @@ impl MmapInvertedIndex {
         // in case of immutable index, deleted documents are still in the postings
         let is_active = move |idx| self.is_active(idx);
 
-        fn merge<'a, V: PersistedPostingValue>(
+        fn merge<'a, V: ZerocopyPostingValue>(
             postings: &'a MmapPostings<V>,
             tokens: TokenSet,
             is_active: impl Fn(PointOffsetType) -> bool + 'a,
@@ -274,7 +274,7 @@ impl MmapInvertedIndex {
             return false;
         }
 
-        fn check_intersection<V: PersistedPostingValue>(
+        fn check_intersection<V: ZerocopyPostingValue>(
             postings: &MmapPostings<V>,
             tokens: &TokenSet,
             point_id: PointOffsetType,
@@ -308,7 +308,7 @@ impl MmapInvertedIndex {
             return false;
         }
 
-        fn check_any<V: PersistedPostingValue>(
+        fn check_any<V: ZerocopyPostingValue>(
             postings: &MmapPostings<V>,
             tokens: &TokenSet,
             point_id: PointOffsetType,

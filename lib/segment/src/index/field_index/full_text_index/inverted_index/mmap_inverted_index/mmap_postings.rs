@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::index::field_index::full_text_index::inverted_index::TokenId;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
-    ALIGNMENT, PersistedPostingValue, PostingListHeader, PostingsHeader,
+    ALIGNMENT, ZerocopyPostingValue, PostingListHeader, PostingsHeader,
 };
 use common::mmap::{Advice, AdviceSetting, Madviseable, open_read_mmap};
 use common::types::PointOffsetType;
@@ -80,14 +80,14 @@ use zerocopy::{FromBytes, IntoBytes};
 /// - `V = Positions` — phrase index; per-doc token positions live in
 ///   `var_size_data`, with each `PostingChunk` / `RemainderPosting` carrying
 ///   a `Sized` handle (offset/len) into that blob.
-pub struct MmapPostings<V: PersistedPostingValue> {
+pub struct MmapPostings<V: ZerocopyPostingValue> {
     _path: PathBuf,
     mmap: Mmap,
     header: PostingsHeader,
     _value_type: PhantomData<V>,
 }
 
-impl<V: PersistedPostingValue> MmapPostings<V> {
+impl<V: ZerocopyPostingValue> MmapPostings<V> {
     fn get_header(&self, token_id: TokenId) -> Option<&PostingListHeader> {
         if self.header.posting_count <= token_id as usize {
             return None;
