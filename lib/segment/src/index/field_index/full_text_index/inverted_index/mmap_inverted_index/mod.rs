@@ -1,6 +1,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use common::bitvec::BitVec;
+use common::counter::hardware_counter::HardwareCounterCell;
+use common::mmap::{self, AdviceSetting, MmapSlice, create_and_ensure_length};
+use common::mmap_hashmap::{MmapHashMap, READ_ENTRY_OVERHEAD};
+use common::types::PointOffsetType;
+use common::universal_io::{MmapFile, OpenOptions};
+use itertools::Either;
+use mmap_postings::MmapPostings;
+use types::ZerocopyPostingValue;
+
 use super::immutable_inverted_index::ImmutableInvertedIndex;
 use super::immutable_postings_enum::ImmutablePostings;
 use super::mmap_inverted_index::mmap_postings_enum::MmapPostingsEnum;
@@ -17,15 +27,6 @@ use crate::index::field_index::full_text_index::inverted_index::Document;
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
-use common::bitvec::BitVec;
-use common::counter::hardware_counter::HardwareCounterCell;
-use common::mmap::{self, AdviceSetting, MmapSlice, create_and_ensure_length};
-use common::mmap_hashmap::{MmapHashMap, READ_ENTRY_OVERHEAD};
-use common::types::PointOffsetType;
-use common::universal_io::{MmapFile, OpenOptions};
-use itertools::Either;
-use mmap_postings::MmapPostings;
-use types::ZerocopyPostingValue;
 
 pub(super) mod mmap_postings;
 pub mod mmap_postings_enum;

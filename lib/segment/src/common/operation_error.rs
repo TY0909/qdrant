@@ -166,6 +166,24 @@ impl From<UniversalIoError> for OperationError {
     }
 }
 
+impl<Src, Dst: ?Sized> From<zerocopy::SizeError<Src, Dst>> for OperationError
+where
+    zerocopy::SizeError<Src, Dst>: std::fmt::Display,
+{
+    fn from(err: zerocopy::SizeError<Src, Dst>) -> Self {
+        Self::service_error(format!("Zerocopy size error: {err}"))
+    }
+}
+
+impl<A, S, V> From<zerocopy::ConvertError<A, S, V>> for OperationError
+where
+    zerocopy::ConvertError<A, S, V>: std::fmt::Display,
+{
+    fn from(err: zerocopy::ConvertError<A, S, V>) -> Self {
+        Self::service_error(format!("Zerocopy convert error: {err}"))
+    }
+}
+
 impl From<serde_cbor::Error> for OperationError {
     fn from(err: serde_cbor::Error) -> Self {
         Self::service_error(format!("Failed to parse data: {err}"))

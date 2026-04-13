@@ -1,17 +1,16 @@
-use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
 use common::types::PointOffsetType;
 use posting_list::{PostingChunk, PostingValue, RemainderPosting, SizedTypeFor, ValueHandler};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
 
 pub const ALIGNMENT: usize = 4;
 
 /// A [`PostingValue`] whose sized payload can be zerocopy-read from an mmap.
 pub(in crate::index::field_index::full_text_index) trait ZerocopyPostingValue:
     PostingValue<
-        Handler: ValueHandler<
-            Sized: FromBytes + IntoBytes + Immutable + KnownLayout + Unaligned,
-        >,
-    >
+    Handler: ValueHandler<Sized: FromBytes + IntoBytes + Immutable + KnownLayout + Unaligned>,
+>
 {
 }
 
