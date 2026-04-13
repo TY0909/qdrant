@@ -27,8 +27,8 @@ impl<'data, T, Meta> IoUringRuntime<'data, T, Meta> {
         Ok(rt)
     }
 
-    /// Push entries into Submission Queue while `entries` returns `Ok(Something)`
-    /// or the queue is full.
+    /// Push entries into Submission Queue while `entries` returns `Ok(Some(thing))`
+    /// or until the queue is full.
     pub fn enqueue_while<F>(&mut self, mut entries: F) -> Result<()>
     where
         F: FnMut(&mut IoUringState<'data, T, Meta>) -> Result<Option<squeue::Entry>>,
@@ -48,10 +48,6 @@ impl<'data, T, Meta> IoUringRuntime<'data, T, Meta> {
         }
 
         Ok(())
-    }
-
-    pub fn completion_is_empty(&mut self) -> bool {
-        self.io_uring.completion().is_empty()
     }
 
     pub fn submit_and_wait(&mut self, want: usize) -> io::Result<()> {
