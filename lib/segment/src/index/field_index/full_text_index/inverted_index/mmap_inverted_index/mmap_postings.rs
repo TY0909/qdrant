@@ -1,80 +1,22 @@
-use std::fmt::Debug;
 use std::io;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+use crate::index::field_index::full_text_index::inverted_index::TokenId;
+use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
+    ALIGNMENT, PersistedPostingValue, PostingListHeader, PostingsHeader,
+};
 use common::mmap::{Advice, AdviceSetting, Madviseable, open_read_mmap};
 use common::types::PointOffsetType;
 use common::zeros::WriteZerosExt;
 use fs_err::File;
 use memmap2::Mmap;
 use posting_list::{
-    PostingChunk, PostingList, PostingListComponents, PostingListView, PostingValue,
-    RemainderPosting, SizedTypeFor, ValueHandler,
+    PostingChunk, PostingList, PostingListComponents, PostingListView, RemainderPosting,
+    SizedTypeFor,
 };
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
-
-use crate::index::field_index::full_text_index::inverted_index::TokenId;
-use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
-
-const ALIGNMENT: usize = 4;
-
-/// Trait marker to enrich [`posting_list::PostingValue`] for handling mmap files with the posting list.
-pub(in crate::index::field_index::full_text_index) trait MmapPostingValue:
-    PostingValue<
-    Handler: ValueHandler<Sized: FromBytes + Immutable + IntoBytes + KnownLayout + Unaligned>
-                 + Clone
-                 + Debug,
->
-{
-}
-
-impl MmapPostingValue for () {}
-
-impl MmapPostingValue for Positions {}
-
-#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
-#[repr(C)]
-struct PostingsHeader {
-    /// Number of posting lists. One posting list per term
-    pub posting_count: usize,
-    _reserved: [u8; 32],
-}
-
-/// This data structure should contain all the necessary information to
-/// construct `PostingListView<V>` from the mmap file.
-#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
-#[repr(C)]
-pub(in crate::index::field_index::full_text_index) struct PostingListHeader {
-    /// Offset in bytes from the start of the mmap file
-    /// where the posting list data starts
-    offset: u64,
-    /// Amount of chunks in compressed posting list
-    chunks_count: u32,
-    /// Length in bytes for the compressed postings data
-    ids_data_bytes_count: u32,
-    /// Length in bytes for the alignment bytes
-    alignment_bytes_count: u8,
-    /// Number of `RemainderPosting` elements (tail that doesn't fill a chunk)
-    remainder_count: u8,
-
-    _reserved: [u8; 2],
-
-    /// Length in bytes for the var-sized data. Add-on for phrase matching, otherwise 0
-    var_size_data_bytes_count: u32,
-}
-
-impl PostingListHeader {
-    fn posting_size<V: PostingValue>(&self) -> usize {
-        self.ids_data_bytes_count as usize
-            + self.var_size_data_bytes_count as usize
-            + self.alignment_bytes_count as usize
-            + self.remainder_count as usize * size_of::<RemainderPosting<SizedTypeFor<V>>>()
-            + self.chunks_count as usize * size_of::<PostingChunk<SizedTypeFor<V>>>()
-            + size_of::<PointOffsetType>() // last_doc_id
-    }
-}
+use zerocopy::{FromBytes, IntoBytes};
 
 /// MmapPostings Structure on disk:
 ///
@@ -138,14 +80,14 @@ impl PostingListHeader {
 /// - `V = Positions` — phrase index; per-doc token positions live in
 ///   `var_size_data`, with each `PostingChunk` / `RemainderPosting` carrying
 ///   a `Sized` handle (offset/len) into that blob.
-pub struct MmapPostings<V: MmapPostingValue> {
+pub struct MmapPostings<V: PersistedPostingValue> {
     _path: PathBuf,
     mmap: Mmap,
     header: PostingsHeader,
     _value_type: PhantomData<V>,
 }
 
-impl<V: MmapPostingValue> MmapPostings<V> {
+impl<V: PersistedPostingValue> MmapPostings<V> {
     fn get_header(&self, token_id: TokenId) -> Option<&PostingListHeader> {
         if self.header.posting_count <= token_id as usize {
             return None;

@@ -1,15 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use common::bitvec::BitVec;
-use common::counter::hardware_counter::HardwareCounterCell;
-use common::mmap::{self, AdviceSetting, MmapSlice, create_and_ensure_length};
-use common::mmap_hashmap::{MmapHashMap, READ_ENTRY_OVERHEAD};
-use common::types::PointOffsetType;
-use common::universal_io::{MmapFile, OpenOptions};
-use itertools::Either;
-use mmap_postings::{MmapPostingValue, MmapPostings};
-
 use super::immutable_inverted_index::ImmutableInvertedIndex;
 use super::immutable_postings_enum::ImmutablePostings;
 use super::mmap_inverted_index::mmap_postings_enum::MmapPostingsEnum;
@@ -26,9 +17,20 @@ use crate::index::field_index::full_text_index::inverted_index::Document;
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
+use common::bitvec::BitVec;
+use common::counter::hardware_counter::HardwareCounterCell;
+use common::mmap::{self, AdviceSetting, MmapSlice, create_and_ensure_length};
+use common::mmap_hashmap::{MmapHashMap, READ_ENTRY_OVERHEAD};
+use common::types::PointOffsetType;
+use common::universal_io::{MmapFile, OpenOptions};
+use itertools::Either;
+use mmap_postings::MmapPostings;
+use types::PersistedPostingValue;
 
 pub(super) mod mmap_postings;
 pub mod mmap_postings_enum;
+pub(in crate::index::field_index::full_text_index) mod types;
+mod uio_postings;
 
 const POSTINGS_FILE: &str = "postings.dat";
 const VOCAB_FILE: &str = "vocab.dat";
@@ -193,7 +195,7 @@ impl MmapInvertedIndex {
         // in case of mmap immutable index, deleted points are still in the postings
         let filter = move |idx| self.is_active(idx);
 
-        fn intersection<'a, V: MmapPostingValue>(
+        fn intersection<'a, V: PersistedPostingValue>(
             postings: &'a MmapPostings<V>,
             tokens: TokenSet,
             filter: impl Fn(u32) -> bool + 'a,
@@ -234,7 +236,7 @@ impl MmapInvertedIndex {
         // in case of immutable index, deleted documents are still in the postings
         let is_active = move |idx| self.is_active(idx);
 
-        fn merge<'a, V: MmapPostingValue>(
+        fn merge<'a, V: PersistedPostingValue>(
             postings: &'a MmapPostings<V>,
             tokens: TokenSet,
             is_active: impl Fn(PointOffsetType) -> bool + 'a,
@@ -272,7 +274,7 @@ impl MmapInvertedIndex {
             return false;
         }
 
-        fn check_intersection<V: MmapPostingValue>(
+        fn check_intersection<V: PersistedPostingValue>(
             postings: &MmapPostings<V>,
             tokens: &TokenSet,
             point_id: PointOffsetType,
@@ -306,7 +308,7 @@ impl MmapInvertedIndex {
             return false;
         }
 
-        fn check_any<V: MmapPostingValue>(
+        fn check_any<V: PersistedPostingValue>(
             postings: &MmapPostings<V>,
             tokens: &TokenSet,
             point_id: PointOffsetType,
