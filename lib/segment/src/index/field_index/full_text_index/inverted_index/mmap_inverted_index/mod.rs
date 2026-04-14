@@ -28,8 +28,10 @@ use crate::index::field_index::full_text_index::inverted_index::postings_iterato
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
 
+pub mod as_posting_list_view;
 pub(super) mod mmap_postings;
 pub mod mmap_postings_enum;
+mod raw_posting_list;
 pub(in crate::index::field_index::full_text_index) mod types;
 mod uio_postings;
 

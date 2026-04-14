@@ -2,17 +2,15 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use common::generic_consts::Random;
-use common::types::PointOffsetType;
-use common::universal_io::{ReadRange, UniversalRead};
-use posting_list::{PostingChunk, PostingListView, RemainderPosting, SizedTypeFor};
-use zerocopy::FromBytes;
-
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::full_text_index::inverted_index::TokenId;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
     PostingListHeader, PostingsHeader, ZerocopyPostingValue,
 };
+use common::generic_consts::{Random, Sequential};
+use common::universal_io::{ReadRange, UniversalRead};
+use zerocopy::FromBytes;
+use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::raw_posting_list::RawPostingList;
 
 #[allow(dead_code)]
 pub struct UniversalPostings<V: ZerocopyPostingValue, S: UniversalRead<u8>> {
@@ -64,48 +62,24 @@ impl<V: ZerocopyPostingValue, S: UniversalRead<u8>> UniversalPostings<V, S> {
     /// _alignment: &'a [u8], // 0-3 extra bytes to align the data
     /// remainder_postings: &'a [PointOffsetType],
     /// ```
-    fn with_view<T>(
-        &self,
-        header: &PostingListHeader,
-        callback: impl Fn(PostingListView<'_, V>) -> T,
-    ) -> OperationResult<Option<T>> {
+    fn raw_posting<'a>(
+        &'a self,
+        header: Cow<'a, PostingListHeader>,
+    ) -> OperationResult<RawPostingList<'a>> {
         let read_range = ReadRange {
             byte_offset: header.offset,
             length: header.posting_size::<V>() as u64,
         };
+        let bytes = self.storage.read::<Sequential>(read_range)?;
+        let result = RawPostingList::new(bytes, header);
+        Ok(result)
+    }
 
-        let raw_bytes = self.storage.read::<Random>(read_range)?;
-
-        let (last_doc_id, bytes) = PointOffsetType::read_from_prefix(raw_bytes.as_ref())?;
-
-        let (chunks, bytes) = <[PostingChunk<SizedTypeFor<V>>]>::ref_from_prefix_with_elems(
-            bytes,
-            header.chunks_count as usize,
-        )?;
-
-        let (id_data, bytes) = bytes.split_at(header.ids_data_bytes_count as usize);
-
-        let (var_size_data, bytes) = bytes.split_at(header.var_size_data_bytes_count as usize);
-
-        // skip padding
-        let bytes = &bytes[header.alignment_bytes_count as usize..];
-
-        let (remainder_postings, _) =
-            <[RemainderPosting<SizedTypeFor<V>>]>::ref_from_prefix_with_elems(
-                bytes,
-                header.remainder_count as usize,
-            )?;
-
-        let posting_list_view = PostingListView::from_components(
-            id_data,
-            chunks,
-            var_size_data,
-            remainder_postings,
-            Some(last_doc_id),
-        );
-
-        let result = callback(posting_list_view);
-
-        Ok(Some(result))
+    pub fn get<'a>(&'a self, token_id: TokenId) -> OperationResult<Option<RawPostingList<'a>>> {
+        let header = self.get_header(token_id)?;
+        if let Some(header) = header {
+            return self.raw_posting(header).map(Some);
+        }
+        Ok(None)
     }
 }
