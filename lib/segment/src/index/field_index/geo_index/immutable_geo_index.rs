@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use ahash::AHashSet;
 use common::generic_consts::Random;
 use common::types::PointOffsetType;
 use common::universal_io::{MmapFile, ReadRange, UniversalRead};
+use roaring::RoaringBitmap;
 
 use super::mmap_geo_index::StoredGeoMapIndex;
 use crate::common::Flusher;
@@ -39,7 +39,7 @@ impl From<super::mmap_geo_index::Counts> for Counts {
 
 pub struct ImmutableGeoMapIndex {
     counts_per_hash: Vec<Counts>,
-    points_map: Vec<(GeoHash, AHashSet<PointOffsetType>)>,
+    points_map: Vec<(GeoHash, RoaringBitmap)>,
     point_to_values: ImmutablePointToValues<GeoPoint>,
     points_count: usize,
     points_values_count: usize,
@@ -69,7 +69,7 @@ impl ImmutableGeoMapIndex {
         let points_map_old = index.storage.points_map.read_whole()?;
         let mut points_map = points_map_old
             .iter()
-            .map(|item| (item.hash.normalize(), AHashSet::default()))
+            .map(|item| (item.hash.normalize(), RoaringBitmap::new()))
             .collect::<Vec<_>>();
         index.storage.points_map_ids.read_batch::<Random, _>(
             points_map_old
@@ -279,7 +279,7 @@ impl ImmutableGeoMapIndex {
                 .points_map
                 .binary_search_by(|x| x.0.cmp(&removed_geo_hash))
             {
-                self.points_map[index].1.remove(&idx);
+                self.points_map[index].1.remove(idx);
             } else {
                 log::warn!("Geo index error: no points for hash {removed_geo_hash} were found");
             };
@@ -293,7 +293,7 @@ impl ImmutableGeoMapIndex {
 
     /// Returns an iterator over all point IDs which have the `geohash` prefix.
     /// Note. Point ID may be repeated multiple times in the iterator.
-    pub fn stored_sub_regions(&self, geo: GeoHash) -> impl Iterator<Item = PointOffsetType> {
+    pub fn stored_sub_regions(&self, geo: GeoHash) -> impl Iterator<Item = PointOffsetType> + '_ {
         let start_index = self
             .points_map
             .binary_search_by(|(p, _h)| p.cmp(&geo))
@@ -301,7 +301,7 @@ impl ImmutableGeoMapIndex {
         self.points_map[start_index..]
             .iter()
             .take_while(move |(p, _h)| p.starts_with(geo))
-            .flat_map(|(_, points)| points.iter().copied())
+            .flat_map(|(_, points)| points.iter())
     }
 
     fn decrement_hash_value_counts(&mut self, geo_hash: GeoHash) {
@@ -327,14 +327,14 @@ impl ImmutableGeoMapIndex {
     }
 
     fn decrement_hash_point_counts(&mut self, geo_hashes: &[GeoHash]) {
-        let mut seen_hashes: AHashSet<GeoHash> = Default::default();
+        let mut seen_hashes: Vec<GeoHash> = Vec::new();
         for geo_hash in geo_hashes {
             for i in 0..=geo_hash.len() {
                 let sub_geo_hash = geo_hash.truncate(i);
                 if seen_hashes.contains(&sub_geo_hash) {
                     continue;
                 }
-                seen_hashes.insert(sub_geo_hash);
+                seen_hashes.push(sub_geo_hash);
                 if let Ok(index) = self
                     .counts_per_hash
                     .binary_search_by(|x| x.hash.cmp(&sub_geo_hash))
@@ -380,17 +380,12 @@ impl ImmutableGeoMapIndex {
             cached_ram_usage_bytes: _,
         } = self;
 
-        let cph_bytes = counts_per_hash.capacity() * std::mem::size_of::<Counts>();
-        let hashset_entry_overhead = std::mem::size_of::<u64>() + std::mem::size_of::<usize>();
-        let pm_bytes: usize = points_map.capacity()
-            * std::mem::size_of::<(GeoHash, AHashSet<PointOffsetType>)>()
-            + points_map
-                .iter()
-                .map(|(_, set)| {
-                    set.capacity()
-                        * (std::mem::size_of::<PointOffsetType>() + hashset_entry_overhead)
-                })
-                .sum::<usize>();
-        cph_bytes + pm_bytes + point_to_values.ram_usage_bytes()
+        let cph_bytes = counts_per_hash.capacity() * size_of::<Counts>();
+        let pm_vec_bytes = points_map.capacity() * size_of::<(GeoHash, RoaringBitmap)>();
+        let pm_heap_bytes: usize = points_map
+            .iter()
+            .map(|(_, bitmap)| bitmap.serialized_size())
+            .sum();
+        cph_bytes + pm_vec_bytes + pm_heap_bytes + point_to_values.ram_usage_bytes()
     }
 }
