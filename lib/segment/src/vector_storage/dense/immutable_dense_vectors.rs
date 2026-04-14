@@ -219,30 +219,6 @@ impl<T: PrimitiveVectorElement, S: UniversalRead<T>> ImmutableDenseVectors<T, S>
         &self.deleted
     }
 
-    /// Reads vectors for the given ids and calls the callback for each vector.
-    /// Tries to utilize asynchronous IO if possible.
-    /// In particular, uses io_uring on Linux and simple synchronous IO otherwise.
-    pub fn read_vectors_async<P: AccessPattern>(
-        &self,
-        points: &[PointOffsetType],
-        mut callback: impl FnMut(usize, PointOffsetType, &[T]),
-    ) -> OperationResult<()> {
-        let vector_size_bytes = size_of::<T>() * self.dim;
-        let ranges = points.iter().copied().map(|point| ReadRange {
-            byte_offset: (HEADER_SIZE + vector_size_bytes * point as usize) as _,
-            length: self.dim as _,
-        });
-
-        self.storage
-            .read_batch::<P, _>(ranges.enumerate(), |idx, vector| {
-                let point = points.get(idx).copied().expect("point ID tracked");
-                callback(idx, point, vector);
-                Ok(())
-            })?;
-
-        Ok(())
-    }
-
     pub fn populate(&self) {
         if let Err(err) = self.storage.populate() {
             log::error!("Failed to populate vector storage: {err}");
