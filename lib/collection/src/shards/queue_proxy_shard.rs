@@ -548,40 +548,42 @@ impl Inner {
     /// This should be fine as operations are idempotent.
     pub async fn transfer_all_missed_updates(&self) -> CollectionResult<()> {
         let mut prefetched: Option<WalBatch> = None;
+        let mut update_lock = None;
 
         loop {
-            let transfer_from = self.transfer_from.load(Ordering::Relaxed);
+            let next_from = prefetched.as_ref().map_or_else(
+                || self.transfer_from.load(Ordering::Relaxed),
+                |b| b.batch.last().unwrap().0 + 1,
+            );
 
-            // Use prefetched batch if available, otherwise read a new one
-            let wal_batch = match prefetched.take() {
-                Some(batch) => batch,
-                None => self.read_wal_batch(transfer_from).await?,
+            // Task to send last read WAL batch to remote, first iteration does not send anything
+            let wal_batch = prefetched.take();
+            let send_future = async {
+                let Some(wal_batch) = wal_batch else {
+                    return Ok(());
+                };
+
+                // Once we hit the last batch, hold the update lock until the very end to prevent
+                // new writes from accumulating on the WAL
+                let is_last = wal_batch.reached_end || wal_batch.batch.is_empty();
+                if is_last && update_lock.is_none() {
+                    update_lock.replace(self.update_lock.lock().await);
+                }
+
+                self.send_wal_batch(&wal_batch, is_last).await
             };
 
-            let is_last = wal_batch.reached_end || wal_batch.batch.is_empty();
+            // Call read and send in parallel
+            let (read_result, send_result) =
+                tokio::join!(self.read_wal_batch(next_from), send_future);
+            send_result?;
 
-            if is_last {
-                // For the last batch, acquire update_lock to prevent new writes from accumulating
-                // on the WAL, then re-read to ensure we capture everything.
-                // Since update_lock blocks all update() calls, the WAL is frozen and the re-read
-                // is guaranteed to return reached_end = true.
-                let _update_lock = self.update_lock.lock().await;
-                let transfer_from = self.transfer_from.load(Ordering::Relaxed);
-                let wal_batch = self.read_wal_batch(transfer_from).await?;
-                self.send_wal_batch(&wal_batch, true).await?;
+            // Stop once we've read an empty batch and we're sure everything is sent
+            if read_result.as_ref().is_ok_and(|b| b.batch.is_empty()) {
                 break;
             }
 
-            // Non-last batch: send current batch and prefetch next batch concurrently.
-            // This overlaps the network round-trip with the WAL read for the next batch.
-            // Note: this temporarily holds two batches in memory (~2x MAX_BATCH_BYTES).
-            let next_from = wal_batch.batch.last().unwrap().0 + 1;
-            let (send_result, prefetch_result) = tokio::join!(
-                self.send_wal_batch(&wal_batch, false),
-                self.read_wal_batch(next_from),
-            );
-            send_result?;
-            prefetched = Some(prefetch_result?);
+            prefetched = Some(read_result?);
         }
 
         // Set the WAL version to keep to the next item we should transfer
