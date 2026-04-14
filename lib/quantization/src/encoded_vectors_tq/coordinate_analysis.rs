@@ -348,8 +348,7 @@ fn append_gaussian_overlay(
         let pdf = gaussian_pdf_zero_mean(val, sigma);
         let expected = n as f64 * bin_width * pdf;
         let px_x = MARGIN_L as f64 + frac * plot_w as f64;
-        let px_y = (MARGIN_T as f64 + plot_h as f64
-            - expected / max_count as f64 * plot_h as f64)
+        let px_y = (MARGIN_T as f64 + plot_h as f64 - expected / max_count as f64 * plot_h as f64)
             .max(MARGIN_T as f64);
         if i > 0 {
             let _ = write!(svg, " ");
