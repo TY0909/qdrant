@@ -314,15 +314,89 @@ fn render_histogram_inner(
     let _ = writeln!(svg, "</g>");
 }
 
-fn render_single_histogram(hist: &Histogram, title: &str, bar_color: &str) -> String {
-    let mut svg = String::new();
-    let _ = writeln!(
+/// Append a Gaussian PDF curve and codebook centroid markers onto the plot area.
+/// Coordinates are relative to the current SVG context (no transform applied).
+fn append_gaussian_overlay(
+    svg: &mut String,
+    hist: &Histogram,
+    sigma: f64,
+    codebook_8: &Codebook,
+    codebook_16: &Codebook,
+) {
+    let plot_w = CHART_W - MARGIN_L - MARGIN_R;
+    let plot_h = CHART_H - MARGIN_T - MARGIN_B;
+    let range = hist.max_val - hist.min_val;
+    let max_count = *hist.bins.iter().max().unwrap_or(&1).max(&1);
+
+    if range <= 0.0 || max_count == 0 {
+        return;
+    }
+
+    let n: usize = hist.bins.iter().sum();
+    let bin_width = range as f64 / NUM_BINS as f64;
+
+    // Gaussian curve as polyline
+    let num_points = 200;
+    let _ = write!(
         svg,
-        "<svg width=\"{CHART_W}\" height=\"{CHART_H}\" xmlns=\"http://www.w3.org/2000/svg\">"
+        "<polyline fill=\"none\" stroke=\"red\" stroke-width=\"2\" \
+         opacity=\"0.8\" points=\""
     );
-    render_histogram_inner(&mut svg, hist, title, 0, 0, bar_color);
-    let _ = writeln!(svg, "</svg>");
-    svg
+    for i in 0..num_points {
+        let frac = i as f64 / (num_points - 1) as f64;
+        let val = hist.min_val as f64 + frac * range as f64;
+        let pdf = gaussian_pdf_zero_mean(val, sigma);
+        let expected = n as f64 * bin_width * pdf;
+        let px_x = MARGIN_L as f64 + frac * plot_w as f64;
+        let px_y = (MARGIN_T as f64 + plot_h as f64
+            - expected / max_count as f64 * plot_h as f64)
+            .max(MARGIN_T as f64);
+        if i > 0 {
+            let _ = write!(svg, " ");
+        }
+        let _ = write!(svg, "{:.1},{:.1}", px_x, px_y);
+    }
+    let _ = writeln!(svg, "\"/>");
+
+    // 16 centroids (levels=4) as smaller pink points
+    for &c in &codebook_16.centroids {
+        let c64 = c as f64;
+        if c64 >= hist.min_val as f64 && c64 <= hist.max_val as f64 {
+            let frac = (c64 - hist.min_val as f64) / range as f64;
+            let pdf = gaussian_pdf_zero_mean(c64, sigma);
+            let expected = n as f64 * bin_width * pdf;
+            let px_x = MARGIN_L as f64 + frac * plot_w as f64;
+            let px_y = (MARGIN_T as f64 + plot_h as f64
+                - expected / max_count as f64 * plot_h as f64)
+                .max(MARGIN_T as f64);
+            let _ = writeln!(
+                svg,
+                "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"3\" \
+                 fill=\"pink\" stroke=\"#c2185b\" stroke-width=\"1\"/>",
+                px_x, px_y
+            );
+        }
+    }
+
+    // 8 centroids (levels=3) as larger orange points
+    for &c in &codebook_8.centroids {
+        let c64 = c as f64;
+        if c64 >= hist.min_val as f64 && c64 <= hist.max_val as f64 {
+            let frac = (c64 - hist.min_val as f64) / range as f64;
+            let pdf = gaussian_pdf_zero_mean(c64, sigma);
+            let expected = n as f64 * bin_width * pdf;
+            let px_x = MARGIN_L as f64 + frac * plot_w as f64;
+            let px_y = (MARGIN_T as f64 + plot_h as f64
+                - expected / max_count as f64 * plot_h as f64)
+                .max(MARGIN_T as f64);
+            let _ = writeln!(
+                svg,
+                "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"5\" \
+                 fill=\"#ff6600\" stroke=\"black\" stroke-width=\"1.5\"/>",
+                px_x, px_y
+            );
+        }
+    }
 }
 
 fn render_grid(histograms: &[Histogram], sorted_by_distortion: &[usize]) -> String {
@@ -564,12 +638,22 @@ pub fn analyse<'a>(
     let output_dir = run_dir.join(prefix);
     fs_err::create_dir_all(&output_dir).expect("Failed to create analysis output directory");
 
-    // Save individual histograms into a coord/ subfolder
+    // Save individual histograms (with Gaussian overlay + codebook centroids) into a coord/ subfolder
     let coord_dir = output_dir.join("coord");
     fs_err::create_dir_all(&coord_dir).expect("Failed to create coord output directory");
+    let sigma = 1.0 / (dim as f64).sqrt();
+    let codebook_8 = Codebook::new(3, dim);
+    let codebook_16 = Codebook::new(4, dim);
     for hist in &histograms {
-        let svg =
-            render_single_histogram(hist, &format!("Coordinate {}", hist.coord_idx), "steelblue");
+        let title = format!("Coordinate {}", hist.coord_idx);
+        let mut svg = String::new();
+        let _ = writeln!(
+            svg,
+            "<svg width=\"{CHART_W}\" height=\"{CHART_H}\" xmlns=\"http://www.w3.org/2000/svg\">"
+        );
+        render_histogram_inner(&mut svg, hist, &title, 0, 0, "steelblue");
+        append_gaussian_overlay(&mut svg, hist, sigma, &codebook_8, &codebook_16);
+        let _ = writeln!(svg, "</svg>");
         let path = coord_dir.join(format!("coord_{}.svg", hist.coord_idx));
         fs_err::write(path, svg).expect("Failed to write histogram SVG");
     }
@@ -743,6 +827,35 @@ pub fn analyse<'a>(
         let _ = writeln!(svg, "</svg>");
         fs_err::write(output_dir.join("all_values_histogram.svg"), svg)
             .expect("Failed to write all-values histogram SVG");
+
+        // Same plot but trimming 1% from each tail
+        let trim = all_values.len() / 100; // 1%
+        if trim > 0 && all_values.len() > 2 * trim {
+            let mut sorted = all_values;
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let trimmed = &sorted[trim..sorted.len() - trim];
+
+            let trimmed_hist = build_histogram(trimmed, 0);
+
+            let mut svg = String::new();
+            let _ = writeln!(
+                svg,
+                "<svg width=\"{CHART_W}\" height=\"{CHART_H}\" xmlns=\"http://www.w3.org/2000/svg\">"
+            );
+            render_histogram_inner(
+                &mut svg,
+                &trimmed_hist,
+                "All coordinates combined (no 1% tails)",
+                0,
+                0,
+                "steelblue",
+            );
+            append_gaussian_overlay(&mut svg, &trimmed_hist, sigma, &codebook_8, &codebook_16);
+            let _ = writeln!(svg, "</svg>");
+
+            fs_err::write(output_dir.join("all_values_histogram_no_tails.svg"), svg)
+                .expect("Failed to write trimmed all-values histogram SVG");
+        }
     }
 
     eprintln!(

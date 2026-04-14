@@ -2077,7 +2077,7 @@ impl QuantizedVectors {
                     vectors_count,
                     quantized_vector_size,
                 )?;
-                Ok(QuantizedVectorStorage::TQRam(EncodedVectorsTQ::encode(
+                let r = EncodedVectorsTQ::encode(
                     vectors,
                     storage_builder,
                     vector_parameters,
@@ -2089,7 +2089,12 @@ impl QuantizedVectors {
                     plus,
                     Some(meta_path.as_path()),
                     stopped,
-                )?))
+                )?;
+
+                let len = r.get_quantized_vector(0).len();
+                log::info!("Turbo quant quantized vector size: {len} bytes");
+
+                Ok(QuantizedVectorStorage::TQRam(r))
             }
             (false, QuantizedVectorsStorageType::Immutable) => {
                 let storage_builder = QuantizedMmapStorageBuilder::new(
