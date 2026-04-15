@@ -332,8 +332,8 @@ impl<T: Sized + Copy + 'static, S: UniversalWrite<T>> ChunkedVectors<T, S> {
 
         let mut vectors_buffer = [const { MaybeUninit::uninit() }; VECTOR_READ_BATCH_SIZE];
 
-        for points_batch in keys.chunks(VECTOR_READ_BATCH_SIZE) {
-            let force_sequential = is_read_with_prefetch_efficient(points_batch);
+        for (batch_idx, keys) in keys.chunks(VECTOR_READ_BATCH_SIZE).enumerate() {
+            let force_sequential = is_read_with_prefetch_efficient(keys);
 
             let (vectors, _) = maybe_uninit_fill_from(
                 &mut vectors_buffer,
@@ -343,8 +343,10 @@ impl<T: Sized + Copy + 'static, S: UniversalWrite<T>> ChunkedVectors<T, S> {
                 }),
             );
 
-            for (idx, vec) in vectors.iter().enumerate() {
-                f(idx, vec.as_ref());
+            let batch_offset = VECTOR_READ_BATCH_SIZE * batch_idx;
+
+            for (vector_idx, vec) in vectors.iter().enumerate() {
+                f(batch_offset + vector_idx, vec.as_ref());
             }
         }
     }

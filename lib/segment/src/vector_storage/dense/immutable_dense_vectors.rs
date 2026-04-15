@@ -150,23 +150,25 @@ impl<T: PrimitiveVectorElement, S: UniversalRead<T>> ImmutableDenseVectors<T, S>
 
         let mut vectors_buffer = [const { MaybeUninit::uninit() }; VECTOR_READ_BATCH_SIZE];
 
-        for points_batch in keys.chunks(VECTOR_READ_BATCH_SIZE) {
-            let vectors = if is_read_with_prefetch_efficient(points_batch) {
-                let iter = points_batch
+        for (batch_idx, keys) in keys.chunks(VECTOR_READ_BATCH_SIZE).enumerate() {
+            let vectors = if is_read_with_prefetch_efficient(keys) {
+                let iter = keys
                     .iter()
                     .map(|&point_id| self.get_vector::<Sequential>(point_id));
 
                 maybe_uninit_fill_from(&mut vectors_buffer, iter).0
             } else {
-                let iter = points_batch
+                let iter = keys
                     .iter()
                     .map(|&point_id| self.get_vector::<Random>(point_id));
 
                 maybe_uninit_fill_from(&mut vectors_buffer, iter).0
             };
 
-            for (idx, vec) in vectors.iter().enumerate() {
-                f(idx, vec);
+            let batch_offset = VECTOR_READ_BATCH_SIZE * batch_idx;
+
+            for (vector_idx, vec) in vectors.iter().enumerate() {
+                f(batch_offset + vector_idx, vec);
             }
         }
     }

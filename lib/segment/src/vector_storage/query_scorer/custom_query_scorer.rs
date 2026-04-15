@@ -94,6 +94,8 @@ impl<
     fn score_stored_batch(&self, ids: &[PointOffsetType], scores: &mut [ScoreType]) {
         debug_assert_eq!(ids.len(), scores.len());
 
+        self.hardware_counter.vector_io_read().incr_delta(ids.len());
+
         self.vector_storage
             .for_each_in_dense_batch(ids, |idx, vector| scores[idx] = self.score(vector));
     }
