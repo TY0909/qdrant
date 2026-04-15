@@ -547,41 +547,45 @@ impl Inner {
     /// likely won't be updated. In the worst case this might cause double sending operations.
     /// This should be fine as operations are idempotent.
     pub async fn transfer_all_missed_updates(&self) -> CollectionResult<()> {
-        let mut prefetched: Option<WalBatch> = None;
+        let mut update_lock = None;
+        // First read not under `update_lock`
+        let mut batch = self
+            .read_wal_batch(self.transfer_from.load(Ordering::Relaxed))
+            .await?;
 
         loop {
-            let transfer_from = self.transfer_from.load(Ordering::Relaxed);
+            // Before exiting on an empty read, acquire `update_lock` and re-read to confirm.
+            // Without the lock, a concurrent write could have committed between our read and
+            // our return, leaving entries behind.
+            if batch.batch.is_empty() && update_lock.is_none() {
+                update_lock = Some(self.update_lock.lock().await);
+                batch = self
+                    .read_wal_batch(self.transfer_from.load(Ordering::Relaxed))
+                    .await?;
+            }
 
-            // Use prefetched batch if available, otherwise read a new one
-            let wal_batch = match prefetched.take() {
-                Some(batch) => batch,
-                None => self.read_wal_batch(transfer_from).await?,
-            };
-
-            let is_last = wal_batch.reached_end || wal_batch.batch.is_empty();
-
-            if is_last {
-                // For the last batch, acquire update_lock to prevent new writes from accumulating
-                // on the WAL, then re-read to ensure we capture everything.
-                // Since update_lock blocks all update() calls, the WAL is frozen and the re-read
-                // is guaranteed to return reached_end = true.
-                let _update_lock = self.update_lock.lock().await;
-                let transfer_from = self.transfer_from.load(Ordering::Relaxed);
-                let wal_batch = self.read_wal_batch(transfer_from).await?;
-                self.send_wal_batch(&wal_batch, true).await?;
+            if batch.batch.is_empty() {
                 break;
             }
 
-            // Non-last batch: send current batch and prefetch next batch concurrently.
-            // This overlaps the network round-trip with the WAL read for the next batch.
+            // Once we see a batch that reaches the end of the WAL, hold `update_lock` for the rest
+            // of the transfer so no new writes can accumulate. Acquiring the lock synchronously
+            // before the `tokio::join!` guarantees the next read runs under the lock.
+            if batch.reached_end && update_lock.is_none() {
+                update_lock = Some(self.update_lock.lock().await);
+            }
+
+            // Send the current batch and prefetch the next one concurrently. This overlaps the
+            // network round-trip with the WAL read for the next batch.
             // Note: this temporarily holds two batches in memory (~2x MAX_BATCH_BYTES).
-            let next_from = wal_batch.batch.last().unwrap().0 + 1;
-            let (send_result, prefetch_result) = tokio::join!(
-                self.send_wal_batch(&wal_batch, false),
+            let is_last = batch.reached_end;
+            let next_from = batch.batch.last().unwrap().0 + 1;
+            let (send_result, read_result) = tokio::join!(
+                self.send_wal_batch(&batch, is_last),
                 self.read_wal_batch(next_from),
             );
             send_result?;
-            prefetched = Some(prefetch_result?);
+            batch = read_result?;
         }
 
         // Set the WAL version to keep to the next item we should transfer
