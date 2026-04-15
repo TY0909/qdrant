@@ -1,4 +1,3 @@
-use std::any;
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -123,7 +122,7 @@ pub trait UniversalRead<T: Copy + 'static>: UniversalReadFileOps {
         }))
     }
 
-    fn type_id() -> any::TypeId;
+    fn kind() -> UniversalKind;
 
     // When adding provided methods, don't forget to update impls in crate::universal_io::wrappers::*.
 }

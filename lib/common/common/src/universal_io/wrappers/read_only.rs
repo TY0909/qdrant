@@ -1,8 +1,9 @@
-use std::any;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use super::super::{OpenOptions, ReadRange, Result, UniversalRead, UniversalReadFileOps};
+use super::super::{
+    OpenOptions, ReadRange, Result, UniversalKind, UniversalRead, UniversalReadFileOps,
+};
 use crate::generic_consts::AccessPattern;
 
 #[derive(Debug)]
@@ -104,7 +105,7 @@ where
         S::read_multi_iter::<P, _>(it)
     }
 
-    fn type_id() -> any::TypeId {
-        S::type_id()
+    fn kind() -> UniversalKind {
+        S::kind()
     }
 }

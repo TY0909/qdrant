@@ -1,4 +1,3 @@
-use std::any;
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -6,7 +5,7 @@ use std::path::{Path, PathBuf};
 use bytemuck::TransparentWrapper;
 
 use super::super::{
-    ByteOffset, FileIndex, Flusher, OpenOptions, ReadRange, Result, UniversalRead,
+    ByteOffset, FileIndex, Flusher, OpenOptions, ReadRange, Result, UniversalKind, UniversalRead,
     UniversalReadFileOps, UniversalWrite,
 };
 use crate::generic_consts::AccessPattern;
@@ -118,8 +117,8 @@ impl<S: UniversalRead<T>, T: Copy + 'static> UniversalRead<T> for TypedStorage<S
         S::read_multi_iter::<P, _>(reads)
     }
 
-    fn type_id() -> any::TypeId {
-        S::type_id()
+    fn kind() -> UniversalKind {
+        S::kind()
     }
 }
 

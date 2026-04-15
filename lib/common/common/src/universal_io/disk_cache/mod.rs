@@ -1,4 +1,3 @@
-use std::any;
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -18,6 +17,8 @@ mod tests;
 
 pub use cached_slice::CachedSlice;
 use controller::{CacheController, CacheRead};
+
+use super::UniversalKind;
 
 /// We cache data in blocks of this size.
 /// Should be multiple of filesystem block size (usually 4 KiB).
@@ -123,7 +124,7 @@ impl<T: bytemuck::Pod> UniversalRead<T> for CachedSlice<T> {
         Ok(())
     }
 
-    fn type_id() -> any::TypeId {
-        any::TypeId::of::<Self>()
+    fn kind() -> UniversalKind {
+        UniversalKind::DiskCache
     }
 }

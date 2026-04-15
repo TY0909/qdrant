@@ -6,7 +6,6 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
-use std::any;
 use std::borrow::Cow;
 use std::io::{self, Read as _, Seek as _};
 use std::os::fd::AsRawFd as _;
@@ -173,8 +172,8 @@ impl<T: bytemuck::Pod + 'static> UniversalRead<T> for IoUringFile {
         Ok(())
     }
 
-    fn type_id() -> any::TypeId {
-        any::TypeId::of::<Self>()
+    fn kind() -> UniversalKind {
+        UniversalKind::IoUring
     }
 }
 

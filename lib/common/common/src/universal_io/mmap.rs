@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{any, fs, slice};
+use std::{fs, slice};
 
 use memmap2::MmapRaw;
 
@@ -110,8 +110,8 @@ where
         Ok(())
     }
 
-    fn type_id() -> any::TypeId {
-        any::TypeId::of::<Self>()
+    fn kind() -> UniversalKind {
+        UniversalKind::Mmap
     }
 }
 
