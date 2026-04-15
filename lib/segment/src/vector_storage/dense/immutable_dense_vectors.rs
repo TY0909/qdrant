@@ -141,7 +141,7 @@ impl<T: PrimitiveVectorElement, S: UniversalRead<T>> ImmutableDenseVectors<T, S>
 
     pub fn for_each_in_batch<F: FnMut(usize, &[T])>(&self, keys: &[PointOffsetType], mut f: F) {
         #[cfg(target_os = "linux")]
-        if S::type_id() == std::any::TypeId::of::<common::universal_io::IoUringFile>() {
+        if S::kind() == common::universal_io::UniversalKind::IoUring {
             return self.for_each_in_batch_async(keys, f);
         }
 
