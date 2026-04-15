@@ -66,6 +66,7 @@ http = { workspace = true }
 actix-web-validator = { workspace = true }
 actix-web = { workspace = true }
 actix-files = { workspace = true }
+async-stream = "0.3"
 
 common = { path = "../common/common" }
 cancel = { path = "../common/cancel" }
