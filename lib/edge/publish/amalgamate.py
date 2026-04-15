@@ -50,6 +50,11 @@ EXCLUDED_DEPENDENCIES = {
     "tonic-build",
 }
 
+# Crates from [patch.crates-io] that have been yanked from crates.io.
+# The script clones them and inlines their sources into the amalgamated
+# crate, just like the local packages in PACKAGES_TO_INCLUDE.
+PATCHED_CRATES = {"core2"}
+
 
 def main() -> None:
     root_manifest = tomlkit.loads(
@@ -58,6 +63,9 @@ def main() -> None:
     packages = all_file_dependencies(REPO_ROOT / "lib/edge")
 
     shutil.rmtree(AMALGAMATION, ignore_errors=True)
+    patched = clone_patched_crates(root_manifest)
+    packages.update(patched)
+    PACKAGES_TO_INCLUDE.extend(patched.keys())
 
     # Copy Rust sources.
     for pkg, (path, manifest) in packages.items():
@@ -303,6 +311,67 @@ def substitute(paths: Path | Iterable[Path], *replacements: tuple[str, str]) -> 
             path.write_text(text, encoding="utf-8")
     for seen, (pattern, _) in zip(seen, replacements):
         assert seen, f"Pattern {pattern!r} not found"
+
+
+def clone_patched_crates(
+    root_manifest: tomlkit.TOMLDocument,
+) -> dict[str, tuple[Path, tomlkit.TOMLDocument]]:
+    """Clone crates from PATCHED_CRATES using git info from [patch.crates-io].
+    Returns mapping package_name -> (path, manifest), like all_file_dependencies.
+    """
+    patches = root_manifest.get("patch", {}).get("crates-io", {})
+    result: dict[str, tuple[Path, tomlkit.TOMLDocument]] = {}
+
+    for name in sorted(PATCHED_CRATES):
+        spec = patches.get(name)
+        if spec is None:
+            print(
+                f"Warning: {name!r} not found in [patch.crates-io]", file=sys.stderr
+            )
+            continue
+        if not isinstance(spec, dict) or "git" not in spec:
+            continue
+
+        target = AMALGAMATION.parent / name
+        shutil.rmtree(target, ignore_errors=True)
+
+        git_url = spec["git"]
+        git_ref = spec.get("rev") or spec.get("branch") or spec.get("tag")
+
+        print(f"Cloning {name} from {git_url}@{git_ref}", file=sys.stderr)
+
+        target.mkdir(parents=True)
+        subprocess.run(
+            ["git", "init", str(target)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(target), "remote", "add", "origin", git_url],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        fetch_cmd = ["git", "-C", str(target), "fetch", "--depth=1", "origin"]
+        if git_ref:
+            fetch_cmd.append(git_ref)
+        subprocess.run(fetch_cmd, check=True)
+        subprocess.run(
+            ["git", "-C", str(target), "checkout", "FETCH_HEAD"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Remove .git directory — we only need the source.
+        shutil.rmtree(target / ".git")
+
+        manifest = tomlkit.loads(
+            (target / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        result[name] = (target, manifest)
+
+    return result
 
 
 def all_file_dependencies(root: Path) -> dict[str, tuple[Path, tomlkit.TOMLDocument]]:
