@@ -1,3 +1,4 @@
+use std::any;
 use std::borrow::Cow;
 use std::io::Write;
 use std::mem::{self, MaybeUninit, size_of};
@@ -164,6 +165,31 @@ impl<T: PrimitiveVectorElement, S: UniversalRead<T>> ImmutableDenseVectors<T, S>
                 f(idx, vec);
             }
         }
+    }
+
+    #[allow(dead_code)] // only used on Linux
+    fn for_each_in_batch_async<F>(&self, keys: &[PointOffsetType], mut callback: F)
+    where
+        F: FnMut(usize, &[T]),
+    {
+        let ranges = keys.iter().enumerate().map(|(idx, &point_id)| {
+            let range = ReadRange {
+                byte_offset: self.data_offset(point_id).expect("point exists") as _,
+                length: self.dim as _,
+            };
+
+            (idx, range)
+        });
+
+        let callback = move |idx, vector: &[T]| {
+            callback(idx, vector);
+            Ok(())
+        };
+
+        // access pattern does not matter for io_uring
+        self.storage
+            .read_batch::<Random, _>(ranges, callback)
+            .expect("vectors read");
     }
 
     /// Marks the key as deleted.
