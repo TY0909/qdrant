@@ -100,8 +100,14 @@ impl<
             .for_each_in_dense_batch(ids, |idx, vector| scores[idx] = self.score(vector));
     }
 
-    fn score_stored_batch_impl(&self, _: &[PointOffsetType], _: &mut [ScoreType]) {
-        unreachable!() // unused
+    #[inline]
+    fn score_stored_batch_impl(&self, ids: &[PointOffsetType], scores: &mut [ScoreType]) {
+        debug_assert!(
+            false,
+            "score_stored_batch_impl should not be used, use score_stored_batch instead"
+        );
+
+        self.score_stored_batch(ids, scores); // fallback
     }
 
     #[inline]

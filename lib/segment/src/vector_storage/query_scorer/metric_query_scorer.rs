@@ -86,8 +86,14 @@ impl<
             });
     }
 
-    fn score_stored_batch_impl(&self, _: &[PointOffsetType], _: &mut [ScoreType]) {
-        unreachable!() // unused
+    #[inline]
+    fn score_stored_batch_impl(&self, ids: &[PointOffsetType], scores: &mut [ScoreType]) {
+        debug_assert!(
+            false,
+            "score_stored_batch_impl should not be used, use score_stored_batch instead"
+        );
+
+        self.score_stored_batch(ids, scores); // fallback
     }
 
     #[inline]
