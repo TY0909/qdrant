@@ -1,4 +1,3 @@
-use std::any;
 use std::borrow::Cow;
 use std::io::Write;
 use std::mem::{self, MaybeUninit, size_of};
@@ -141,6 +140,11 @@ impl<T: PrimitiveVectorElement, S: UniversalRead<T>> ImmutableDenseVectors<T, S>
     }
 
     pub fn for_each_in_batch<F: FnMut(usize, &[T])>(&self, keys: &[PointOffsetType], mut f: F) {
+        #[cfg(target_os = "linux")]
+        if S::type_id() == std::any::TypeId::of::<common::universal_io::IoUringFile>() {
+            return self.for_each_in_batch_async(keys, f);
+        }
+
         // The `f` is most likely a scorer function. Fetching all vectors first, and then scoring
         // them is more cache friendly, than fetching and scoring in a single loop.
 
