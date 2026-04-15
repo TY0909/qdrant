@@ -140,23 +140,29 @@ impl<T: PrimitiveVectorElement, S: UniversalRead<T>> ImmutableDenseVectors<T, S>
     }
 
     pub fn for_each_in_batch<F: FnMut(usize, &[T])>(&self, keys: &[PointOffsetType], mut f: F) {
-        debug_assert!(keys.len() <= VECTOR_READ_BATCH_SIZE);
-
-        // The `f` is most likely a scorer function.
-        // Fetching all vectors first then scoring them is more cache friendly
-        // than fetching and scoring in a single loop.
+        // The `f` is most likely a scorer function. Fetching all vectors first, and then scoring
+        // them is more cache friendly, than fetching and scoring in a single loop.
 
         let mut vectors_buffer = [const { MaybeUninit::uninit() }; VECTOR_READ_BATCH_SIZE];
-        let vectors = if is_read_with_prefetch_efficient(keys) {
-            let iter = keys.iter().map(|key| self.get_vector::<Sequential>(*key));
-            maybe_uninit_fill_from(&mut vectors_buffer, iter).0
-        } else {
-            let iter = keys.iter().map(|key| self.get_vector::<Random>(*key));
-            maybe_uninit_fill_from(&mut vectors_buffer, iter).0
-        };
 
-        for (i, vec) in vectors.iter().enumerate() {
-            f(i, vec);
+        for points_batch in keys.chunks(VECTOR_READ_BATCH_SIZE) {
+            let vectors = if is_read_with_prefetch_efficient(points_batch) {
+                let iter = points_batch
+                    .iter()
+                    .map(|&point_id| self.get_vector::<Sequential>(point_id));
+
+                maybe_uninit_fill_from(&mut vectors_buffer, iter).0
+            } else {
+                let iter = points_batch
+                    .iter()
+                    .map(|&point_id| self.get_vector::<Random>(point_id));
+
+                maybe_uninit_fill_from(&mut vectors_buffer, iter).0
+            };
+
+            for (idx, vec) in vectors.iter().enumerate() {
+                f(idx, vec);
+            }
         }
     }
 
