@@ -1,3 +1,4 @@
+use std::any;
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -120,5 +121,9 @@ impl<T: bytemuck::Pod> UniversalRead<T> for CachedSlice<T> {
     fn clear_ram_cache(&self) -> Result<()> {
         // TODO: issue fadvise DONTNEED on the cache file's backing mmap region.
         Ok(())
+    }
+
+    fn type_id() -> any::TypeId {
+        any::TypeId::of::<Self>()
     }
 }

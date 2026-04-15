@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fs, slice};
+use std::{any, fs, slice};
 
 use memmap2::MmapRaw;
 
@@ -108,6 +108,10 @@ where
         } = self;
         mmap.clear_cache();
         Ok(())
+    }
+
+    fn type_id() -> any::TypeId {
+        any::TypeId::of::<Self>()
     }
 }
 

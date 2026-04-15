@@ -1,3 +1,4 @@
+use std::any;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -101,5 +102,9 @@ where
             .into_iter()
             .map(|(meta, file, range)| (meta, &file.0, range));
         S::read_multi_iter::<P, _>(it)
+    }
+
+    fn type_id() -> any::TypeId {
+        S::type_id()
     }
 }
