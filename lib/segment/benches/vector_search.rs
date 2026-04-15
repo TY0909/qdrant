@@ -69,7 +69,7 @@ fn benchmark<const IO_URING: bool, const VECTORS: usize, const BATCH: usize>(c: 
 
     group.bench_function(benchmark_id, |b| {
         b.iter_batched(
-            || random_query_batch::<BATCH>(),
+            random_query_batch::<BATCH>,
             |vectors| {
                 BatchFilteredSearcher::new_for_test(
                     &vectors,
