@@ -1,3 +1,6 @@
 [workspace]
 resolver = "3"
 members = [ "examples", "qdrant-edge" ]
+
+[patch.crates-io]
+core2 = { path = "qdrant-edge/core2" }

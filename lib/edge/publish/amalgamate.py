@@ -51,8 +51,9 @@ EXCLUDED_DEPENDENCIES = {
 }
 
 # Crates from [patch.crates-io] that have been yanked from crates.io.
-# The script clones them and inlines their sources into the amalgamated
-# crate, just like the local packages in PACKAGES_TO_INCLUDE.
+# The script clones them and copies them into the amalgamated crate
+# directory, then adds [patch.crates-io] entries with local paths to the
+# generated Cargo.toml so Cargo resolves them locally.
 PATCHED_CRATES = {"core2"}
 
 
@@ -64,8 +65,6 @@ def main() -> None:
 
     shutil.rmtree(AMALGAMATION, ignore_errors=True)
     patched = clone_patched_crates(root_manifest)
-    packages.update(patched)
-    PACKAGES_TO_INCLUDE.extend(patched.keys())
 
     # Copy Rust sources.
     for pkg, (path, manifest) in packages.items():
@@ -106,6 +105,14 @@ def main() -> None:
     shutil.copytree(REPO_ROOT / "lib/segment/tokenizer", AMALGAMATION / "tokenizer")
     shutil.copy2(Path(__file__).parent / "README.md", AMALGAMATION / "README.md")
 
+    # Copy patched crates into the amalgamated crate directory.
+    patch_table = {}
+    for name, (clone_path, _) in patched.items():
+        shutil.copytree(clone_path, AMALGAMATION / name)
+        spec = tomlkit.inline_table()
+        spec.update({"path": name})
+        patch_table[name] = spec
+
     # Write Cargo.toml.
     manifest = {
         "package": {
@@ -126,6 +133,8 @@ def main() -> None:
             root_manifest, [manifest for _, manifest in packages.values()]
         ),
     }
+    if patch_table:
+        manifest["patch"] = {"crates-io": patch_table}
     (AMALGAMATION / "Cargo.toml").write_text(tomlkit.dumps(manifest), encoding="utf-8")
 
     # Write src/lib.rs.
