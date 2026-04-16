@@ -258,17 +258,16 @@ async fn _do_recover_from_snapshot(
         let local_shard_state = shard_info.replicas.get(&this_peer_id);
         match local_shard_state {
             None => {} // Shard is not on this node, skip
-            Some(state) => {
-                if state != &recovery_state {
-                    toc.send_set_replica_state_proposal(
-                        collection_pass.to_string(),
-                        this_peer_id,
-                        *shard_id,
-                        recovery_state,
-                        None,
-                    )?;
-                }
+            Some(state) if state != &recovery_state => {
+                toc.send_set_replica_state_proposal(
+                    collection_pass.to_string(),
+                    this_peer_id,
+                    *shard_id,
+                    recovery_state,
+                    None,
+                )?;
             }
+            Some(_) => {}
         }
     }
 

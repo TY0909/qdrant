@@ -245,19 +245,17 @@ where
 
     match &filter.must {
         None => {}
-        Some(conditions) => {
-            if !conditions.is_empty() {
-                filter_estimations.push(estimate_must(estimator, conditions, total)?);
-            }
+        Some(conditions) if !conditions.is_empty() => {
+            filter_estimations.push(estimate_must(estimator, conditions, total)?);
         }
+        Some(_) => {}
     }
     match &filter.should {
         None => {}
-        Some(conditions) => {
-            if !conditions.is_empty() {
-                filter_estimations.push(estimate_should(estimator, conditions, total)?);
-            }
+        Some(conditions) if !conditions.is_empty() => {
+            filter_estimations.push(estimate_should(estimator, conditions, total)?);
         }
+        Some(_) => {}
     }
     match &filter.min_should {
         None => {}
@@ -270,11 +268,10 @@ where
     }
     match &filter.must_not {
         None => {}
-        Some(conditions) => {
-            if !conditions.is_empty() {
-                filter_estimations.push(estimate_must_not(estimator, conditions, total)?)
-            }
+        Some(conditions) if !conditions.is_empty() => {
+            filter_estimations.push(estimate_must_not(estimator, conditions, total)?)
         }
+        Some(_) => {}
     }
 
     Ok(combine_must_estimations(&filter_estimations, total))
