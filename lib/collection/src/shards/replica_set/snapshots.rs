@@ -14,7 +14,7 @@ use crate::operations::types::{CollectionError, CollectionResult};
 use crate::shards::dummy_shard::DummyShard;
 use crate::shards::local_shard::LocalShard;
 use crate::shards::replica_set::replica_set_state::ReplicaSetState;
-use crate::shards::shard::{PeerId, Shard};
+use crate::shards::shard::{LocalShardGuard, PeerId, Shard};
 use crate::shards::shard_config::ShardConfig;
 use crate::shards::shard_initializing_flag_path;
 
@@ -108,12 +108,18 @@ impl ShardReplicaSet {
     /// # Cancel safety
     ///
     /// This method is *not* cancel safe.
+    /// Restore the local replica from a snapshot directory.
+    ///
+    /// If `local_guard` is `Some`, it is used as the pre-acquired write guard on the local shard
+    /// slot. This is used during shard snapshot transfers where the guard is held from clearing the
+    /// old data through the download and restoration, preventing data races with consensus.
     pub async fn restore_local_replica_from(
         &self,
         replica_path: &Path,
         recovery_type: RecoveryType,
         collection_path: &Path,
         cancel: cancel::CancellationToken,
+        local_guard: Option<LocalShardGuard>,
     ) -> CollectionResult<bool> {
         // `local.take()` call and `restore` task have to be executed as a single transaction
 
@@ -135,7 +141,13 @@ impl ShardReplicaSet {
             }
         };
 
-        let mut local = cancel::future::cancel_on_token(cancel.clone(), self.local.write()).await?;
+        let mut local = match local_guard {
+            Some(guard) => guard,
+            None => {
+                cancel::future::cancel_on_token(cancel.clone(), self.local.clone().write_owned())
+                    .await?
+            }
+        };
 
         // set shard_id initialization flag
         // the file is removed after full recovery to indicate a well-formed shard

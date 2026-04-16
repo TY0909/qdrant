@@ -537,6 +537,7 @@ async fn upload_shard_snapshot(
             priority.unwrap_or_default(),
             RecoveryType::Full,
             cancel,
+            None,
         )
         .await?;
 
@@ -720,6 +721,7 @@ async fn recover_partial_snapshot(
             priority.unwrap_or_default(),
             RecoveryType::Partial,
             cancel,
+            None,
         )
         .await?;
 
@@ -886,6 +888,7 @@ async fn recover_partial_snapshot_from(
             SnapshotPriority::NoSync,
             RecoveryType::Partial,
             cancel,
+            None,
         )
         .await?;
 

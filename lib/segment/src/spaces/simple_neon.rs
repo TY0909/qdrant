@@ -4,7 +4,7 @@ use std::arch::aarch64::*;
 #[cfg(target_feature = "neon")]
 use common::types::ScoreType;
 
-use super::tools::is_length_zero_or_normalized;
+use super::tools::{clamp_to_unit_length, is_length_zero_or_normalized};
 use crate::data_types::vectors::DenseVector;
 #[cfg(target_feature = "neon")]
 use crate::data_types::vectors::VectorElementType;
@@ -157,6 +157,7 @@ pub(crate) unsafe fn cosine_preprocess_neon(mut vector: DenseVector) -> DenseVec
             *v *= inv_length;
         }
 
+        clamp_to_unit_length(&mut vector);
         vector
     }
 }

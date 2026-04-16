@@ -304,6 +304,15 @@ mod test {
             return vector;
         }
         length = length.sqrt();
-        vector.iter().map(|x| x / length).collect()
+        let mut normalized: Vec<f64> = vector.iter().map(|x| x / length).collect();
+        // Clamp norm to at most 1.0 to protect against float precision errors.
+        let norm_sq: f64 = normalized.iter().map(|x| x * x).sum();
+        if norm_sq > 1.0 {
+            let correction = 1.0 / norm_sq.sqrt();
+            for x in normalized.iter_mut() {
+                *x *= correction;
+            }
+        }
+        normalized
     }
 }

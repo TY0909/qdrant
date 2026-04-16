@@ -95,7 +95,7 @@ use crate::shards::shard_trait::WaitUntil;
 /// Perform updates on all replicas and report error if there is at least one failure.
 ///
 pub struct ShardReplicaSet {
-    local: RwLock<Option<Shard>>, // Abstract Shard to be able to use a Proxy during replication
+    local: Arc<RwLock<Option<Shard>>>, // Abstract Shard to be able to use a Proxy during replication
     remotes: RwLock<Vec<RemoteShard>>,
     replica_state: Arc<SaveOnDisk<ReplicaSetState>>,
     /// List of peers that are marked as dead locally, but are not yet submitted to the consensus.
@@ -213,7 +213,7 @@ impl ShardReplicaSet {
         Ok(Self {
             shard_id,
             shard_key,
-            local: RwLock::new(local),
+            local: Arc::new(RwLock::new(local)),
             remotes: RwLock::new(remote_shards),
             replica_state: replica_state.into(),
             locally_disabled_peers: Default::default(),
@@ -354,7 +354,7 @@ impl ShardReplicaSet {
         let replica_set = Self {
             shard_id,
             shard_key,
-            local: RwLock::new(local),
+            local: Arc::new(RwLock::new(local)),
             remotes: RwLock::new(remote_shards),
             replica_state: replica_state.into(),
             // TODO: move to collection config
@@ -600,6 +600,23 @@ impl ShardReplicaSet {
                 ))
             }
         }
+    }
+
+    /// Drop the local shard, clear its data files on disk, and return the write guard.
+    ///
+    /// This is used during shard snapshot transfers to free disk space before downloading the new
+    /// snapshot, avoiding the need for 2x disk space during the transfer. The returned guard must
+    /// be held until the new shard data is restored (via [`restore_local_replica_from`]) to prevent
+    /// concurrent consensus operations from re-creating the local shard during the window.
+    pub async fn clear_and_lock_local_shard(
+        &self,
+    ) -> CollectionResult<super::shard::LocalShardGuard> {
+        let mut guard = self.local.clone().write_owned().await;
+        if let Some(shard) = guard.take() {
+            shard.stop_gracefully().await;
+        }
+        LocalShard::clear(&self.shard_path).await?;
+        Ok(guard)
     }
 
     /// Clears the local shard data and loads an empty local shard

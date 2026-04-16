@@ -7,7 +7,7 @@ use super::simple_avx::*;
 use super::simple_neon::*;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use super::simple_sse::*;
-use super::tools::is_length_zero_or_normalized;
+use super::tools::{clamp_to_unit_length, is_length_zero_or_normalized};
 use crate::data_types::vectors::{DenseVector, VectorElementType};
 use crate::types::Distance;
 
@@ -231,7 +231,9 @@ pub fn cosine_preprocess(vector: DenseVector) -> DenseVector {
         return vector;
     }
     length = length.sqrt();
-    vector.iter().map(|x| x / length).collect()
+    let mut normalized: DenseVector = vector.iter().map(|x| x / length).collect();
+    clamp_to_unit_length(&mut normalized);
+    normalized
 }
 
 pub fn dot_similarity(v1: &[VectorElementType], v2: &[VectorElementType]) -> ScoreType {

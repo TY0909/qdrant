@@ -8,7 +8,7 @@ use collection::operations::snapshot_ops::{
 };
 use collection::operations::verification::VerificationPass;
 use collection::shards::replica_set::replica_set_state::ReplicaState;
-use collection::shards::shard::ShardId;
+use collection::shards::shard::{LocalShardGuard, ShardId};
 use collection::shards::transfer::RecoveryStage;
 use shard::snapshots::snapshot_data::SnapshotData;
 use shard::snapshots::snapshot_manifest::{RecoveryType, SnapshotManifest};
@@ -194,6 +194,26 @@ pub async fn recover_shard_snapshot(
             .await
             .start_shard_recovery(shard_id);
 
+        // For shard transfers, clear existing shard data before downloading to
+        // avoid needing 2x disk space during the transfer. The returned guard is
+        // held through the download and restoration to prevent consensus from
+        // re-creating the local shard during this window.
+        let local_guard = if matches!(snapshot_priority, SnapshotPriority::ShardTransfer) {
+            log::debug!(
+                "Clearing local shard {shard_id} data before snapshot transfer download"
+            );
+            Some(
+                collection
+                    .shards_holder()
+                    .read()
+                    .await
+                    .clear_and_lock_local_shard(shard_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
         let download_task = async {
             let DownloadResult {
                 snapshot,
@@ -283,6 +303,7 @@ pub async fn recover_shard_snapshot(
             snapshot_priority,
             RecoveryType::Full,
             cancel,
+            local_guard,
         )
         .await;
 
@@ -311,6 +332,7 @@ pub async fn recover_shard_snapshot_impl(
     priority: SnapshotPriority,
     recovery_type: RecoveryType,
     cancel: cancel::CancellationToken,
+    local_guard: Option<LocalShardGuard>,
 ) -> Result<(), StorageError> {
     let _recover_tracker_guard = toc
         .snapshot_telemetry_collector(collection.name())
@@ -333,6 +355,7 @@ pub async fn recover_shard_snapshot_impl(
             // Default temporary path to storage dir, to allow faster recovery within the same volume
             &toc.optional_temp_or_storage_temp_path()?,
             cancel,
+            local_guard,
         )
         .await?
         .await?;

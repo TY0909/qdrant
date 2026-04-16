@@ -15,6 +15,21 @@ pub fn is_length_zero_or_normalized(length: f32) -> bool {
     length < f32::EPSILON || (length - 1.0).abs() <= 1.0e-6
 }
 
+/// Clamp the norm of a normalized vector to at most 1.0.
+///
+/// After normalization, float precision errors in the component-wise division can cause the
+/// squared norm to slightly exceed 1.0. This rescales the vector if needed.
+#[inline]
+pub fn clamp_to_unit_length(vector: &mut [f32]) {
+    let norm_sq: f32 = vector.iter().map(|x| x * x).sum();
+    if norm_sq > 1.0 {
+        let correction = 1.0 / norm_sq.sqrt();
+        for x in vector.iter_mut() {
+            *x *= correction;
+        }
+    }
+}
+
 pub fn peek_top_smallest_iterable<I, E: Ord>(elements: I, top: usize) -> Vec<E>
 where
     I: IntoIterator<Item = E>,

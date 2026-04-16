@@ -1297,6 +1297,7 @@ impl ShardHolder {
         is_distributed: bool,
         temp_dir: &Path,
         cancel: cancel::CancellationToken,
+        local_guard: Option<crate::shards::shard::LocalShardGuard>,
     ) -> CollectionResult<()> {
         if !self.contains_shard(shard_id) {
             return Err(shard_not_found_error(shard_id));
@@ -1366,6 +1367,7 @@ impl ShardHolder {
                 collection_path,
                 shard_id,
                 cancel,
+                local_guard,
             )
             .await?;
 
@@ -1384,6 +1386,19 @@ impl ShardHolder {
         Ok(())
     }
 
+    /// Drop the local shard, clear its data files on disk, and return the write guard.
+    ///
+    /// See [`ShardReplicaSet::clear_and_lock_local_shard`] for details.
+    pub async fn clear_and_lock_local_shard(
+        &self,
+        shard_id: ShardId,
+    ) -> CollectionResult<crate::shards::shard::LocalShardGuard> {
+        let replica_set = self
+            .get_shard(shard_id)
+            .ok_or_else(|| shard_not_found_error(shard_id))?;
+        replica_set.clear_and_lock_local_shard().await
+    }
+
     /// # Cancel safety
     ///
     /// This method is *not* cancel safe.
@@ -1394,6 +1409,7 @@ impl ShardHolder {
         collection_path: &Path,
         shard_id: ShardId,
         cancel: cancel::CancellationToken,
+        local_guard: Option<crate::shards::shard::LocalShardGuard>,
     ) -> CollectionResult<bool> {
         // TODO:
         //   Check that shard snapshot is compatible with the collection
@@ -1405,7 +1421,13 @@ impl ShardHolder {
 
         // `ShardReplicaSet::restore_local_replica_from` is *not* cancel safe
         let res = replica_set
-            .restore_local_replica_from(snapshot_shard_path, recovery_type, collection_path, cancel)
+            .restore_local_replica_from(
+                snapshot_shard_path,
+                recovery_type,
+                collection_path,
+                cancel,
+                local_guard,
+            )
             .await?;
 
         Ok(res)

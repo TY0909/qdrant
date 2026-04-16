@@ -2,7 +2,7 @@ use std::arch::x86_64::*;
 
 use common::types::ScoreType;
 
-use super::tools::is_length_zero_or_normalized;
+use super::tools::{clamp_to_unit_length, is_length_zero_or_normalized};
 use crate::data_types::vectors::{DenseVector, VectorElementType};
 
 #[target_feature(enable = "avx")]
@@ -160,7 +160,9 @@ pub(crate) unsafe fn cosine_preprocess_avx(vector: DenseVector) -> DenseVector {
             return vector;
         }
         length = length.sqrt();
-        vector.into_iter().map(|x| x / length).collect()
+        let mut normalized: DenseVector = vector.into_iter().map(|x| x / length).collect();
+        clamp_to_unit_length(&mut normalized);
+        normalized
     }
 }
 

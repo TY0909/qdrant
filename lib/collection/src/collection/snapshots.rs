@@ -266,6 +266,7 @@ impl Collection {
                 &self.path,
                 shard_id,
                 cancel,
+                None,
             )
             .await?;
 
@@ -328,6 +329,7 @@ impl Collection {
         is_distributed: bool,
         temp_dir: &Path,
         cancel: cancel::CancellationToken,
+        local_guard: Option<crate::shards::shard::LocalShardGuard>,
     ) -> CollectionResult<impl Future<Output = CollectionResult<()>> + 'static> {
         // `ShardHolder::validate_shard_snapshot` is cancel safe, so we explicitly cancel it
         // when token is triggered
@@ -352,6 +354,7 @@ impl Collection {
                     is_distributed,
                     &temp_dir,
                     cancel,
+                    local_guard,
                 )
                 .await?;
 

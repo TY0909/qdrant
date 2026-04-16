@@ -32,6 +32,13 @@ pub type ShardId = u32;
 
 pub type PeerId = u64;
 
+/// Write guard for the local shard slot on a [`ShardReplicaSet`](super::replica_set::ShardReplicaSet).
+///
+/// Holding this guard prevents concurrent modifications to the local shard by consensus or other
+/// operations. Used during shard snapshot transfers to ensure the local shard is not re-created
+/// between clearing and restoring it.
+pub type LocalShardGuard = tokio::sync::OwnedRwLockWriteGuard<Option<Shard>>;
+
 /// List of peers that should be used to place replicas of a shard
 pub type ShardReplicasPlacement = Vec<PeerId>;
 
