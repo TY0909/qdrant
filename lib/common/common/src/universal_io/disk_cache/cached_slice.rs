@@ -87,26 +87,25 @@ impl<T: bytemuck::Pod> CachedSlice<T> {
         // Multi-block: delegate to the batch path which submits all
         // cold-storage reads together via io_uring.
         let mut result = None;
-        self.get_range_batch(std::iter::once(((), range)), |_meta, buf| {
+        Self::read_multi(std::iter::once(((), self, range)), |_meta, buf| {
             result = Some(buf.to_vec());
             Ok(())
         })?;
         Ok(Cow::Owned(result.expect("callback was called")))
     }
 
-    /// Batch version of [`get_range`](Self::get_range).
+    /// Batch read across any number of `CachedSlice`s sharing the same cache
+    /// controller.
     ///
-    /// All block reads across every range are submitted together via a single
-    /// `get_from_cache_batch` call, so cold-storage I/O is batched through
-    /// io_uring.
-    ///
-    /// `callback(range_idx, &[T])` is called once per input range with the
-    /// fully assembled data for that range.
-    pub fn get_range_batch<'a, Meta: 'a>(
-        &self,
-        ranges: impl IntoIterator<Item = (Meta, ReadRange)>,
+    /// All block reads for every `(meta, &CachedSlice, range)` tuple are
+    /// submitted together via a single `get_from_cache_batch` call.
+    pub fn read_multi<'a, Meta: 'a>(
+        reads: impl IntoIterator<Item = (Meta, &'a Self, ReadRange)>,
         mut callback: impl FnMut(Meta, &[T]) -> universal_io::Result<()>,
-    ) -> universal_io::Result<()> {
+    ) -> universal_io::Result<()>
+    where
+        Self: 'a,
+    {
         let t_size = mem::size_of::<T>();
         debug_assert!(t_size != 0, "cannot use zero-sized type");
 
@@ -124,14 +123,23 @@ impl<T: bytemuck::Pod> CachedSlice<T> {
         // Dense list of (range_idx, buffer) for multi-block ranges only.
         // Empty (no heap allocation) when all ranges are single-block.
         let mut multiblock_buffers: Vec<(usize, Vec<T>)> = Vec::new();
+        let mut controller: Option<Arc<CacheController<IoUringFile>>> = None;
 
-        for (range_idx, (meta, range)) in ranges.into_iter().enumerate() {
+        for (range_idx, (meta, file, range)) in reads.into_iter().enumerate() {
+            match &controller {
+                None => controller = Some(Arc::clone(&file.controller)),
+                Some(existing) => debug_assert!(
+                    Arc::ptr_eq(existing, &file.controller),
+                    "all CachedSlices in read_multi must share the same controller",
+                ),
+            }
+
             let byte_start =
                 usize::try_from(range.byte_offset).expect("range.byte_offset is within usize");
             let byte_length =
                 usize::try_from(range.length).expect("range.length is within usize") * t_size;
             let byte_range = byte_start..byte_start + byte_length;
-            let blocks = self.blocks_for(byte_range);
+            let blocks = file.blocks_for(byte_range);
 
             let buffer_idx = (blocks.len() > 1).then(|| {
                 let buffer_idx = multiblock_buffers.len();
@@ -155,10 +163,11 @@ impl<T: bytemuck::Pod> CachedSlice<T> {
         if block_requests.is_empty() {
             return Ok(());
         }
+        let controller = controller.expect("non-empty block_requests implies there is a controller");
 
         let mut callback_err: Option<universal_io::UniversalIoError> = None;
 
-        self.controller
+        controller
             .get_from_cache_batch(block_requests, |block_idx, slice| {
                 if callback_err.is_some() {
                     return;

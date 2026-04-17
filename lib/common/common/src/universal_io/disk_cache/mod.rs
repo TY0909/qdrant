@@ -95,7 +95,20 @@ impl<T: bytemuck::Pod> UniversalRead<T> for CachedSlice<T> {
         ranges: impl IntoIterator<Item = (Meta, ReadRange)>,
         callback: impl FnMut(Meta, &[T]) -> Result<()>,
     ) -> Result<()> {
-        self.get_range_batch(ranges, callback)
+        CachedSlice::read_multi(
+            ranges.into_iter().map(|(meta, range)| (meta, self, range)),
+            callback,
+        )
+    }
+
+    fn read_multi<'a, P: AccessPattern, Meta: 'a>(
+        reads: impl IntoIterator<Item = (Meta, &'a Self, ReadRange)>,
+        callback: impl FnMut(Meta, &[T]) -> Result<()>,
+    ) -> Result<()>
+    where
+        Self: 'a,
+    {
+        CachedSlice::read_multi(reads, callback)
     }
 
     fn len(&self) -> Result<u64> {
