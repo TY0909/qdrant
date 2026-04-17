@@ -163,33 +163,33 @@ impl<T: bytemuck::Pod> CachedSlice<T> {
         if block_requests.is_empty() {
             return Ok(());
         }
-        let controller = controller.expect("non-empty block_requests implies there is a controller");
+        let controller =
+            controller.expect("non-empty block_requests implies there is a controller");
 
         let mut callback_err: Option<universal_io::UniversalIoError> = None;
 
-        controller
-            .get_from_cache_batch(block_requests, |block_idx, slice| {
-                if callback_err.is_some() {
-                    return;
-                }
+        controller.get_from_cache_batch(block_requests, |block_idx, slice| {
+            if callback_err.is_some() {
+                return;
+            }
 
-                let BlockMeta {
-                    range_idx,
-                    multiblock,
-                } = block_meta[block_idx];
-                if let Some((buffer_idx, dest_offset)) = multiblock {
-                    // Multi-block range: copy into the multiblock buffer.
-                    let buf = &mut multiblock_buffers[buffer_idx].1;
-                    let buf_bytes = bytemuck::cast_slice_mut::<T, u8>(buf);
-                    buf_bytes[dest_offset..dest_offset + slice.len()].copy_from_slice(slice);
-                } else {
-                    // Single-block range: deliver directly, no buffer needed.
-                    let meta = range_meta[range_idx].take().expect("Only consumed once");
-                    if let Err(e) = callback(meta, bytemuck::cast_slice(slice)) {
-                        callback_err = Some(e);
-                    }
+            let BlockMeta {
+                range_idx,
+                multiblock,
+            } = block_meta[block_idx];
+            if let Some((buffer_idx, dest_offset)) = multiblock {
+                // Multi-block range: copy into the multiblock buffer.
+                let buf = &mut multiblock_buffers[buffer_idx].1;
+                let buf_bytes = bytemuck::cast_slice_mut::<T, u8>(buf);
+                buf_bytes[dest_offset..dest_offset + slice.len()].copy_from_slice(slice);
+            } else {
+                // Single-block range: deliver directly, no buffer needed.
+                let meta = range_meta[range_idx].take().expect("Only consumed once");
+                if let Err(e) = callback(meta, bytemuck::cast_slice(slice)) {
+                    callback_err = Some(e);
                 }
-            })?;
+            }
+        })?;
 
         if let Some(err) = callback_err {
             return Err(err);

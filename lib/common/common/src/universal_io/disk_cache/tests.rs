@@ -6,9 +6,8 @@ use fs_err as fs;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-use crate::universal_io::ReadRange;
-
 use super::{BLOCK_SIZE, CacheController, CachedSlice};
+use crate::universal_io::ReadRange;
 
 #[test]
 fn test_cacher() {
