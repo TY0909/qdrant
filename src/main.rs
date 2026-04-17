@@ -18,12 +18,12 @@ use std::time::Duration;
 
 use ::common::budget::{ResourceBudget, get_io_budget};
 use ::common::cpu::get_cpu_budget;
-#[cfg(target_os = "linux")]
-use ::common::universal_io::disk_cache::CacheController;
 use ::common::flags::{feature_flags, init_feature_flags};
 use ::common::fs::{FsCheckResult, check_fs_info, check_mmap_functionality};
 use ::common::mmap::MULTI_MMAP_SUPPORT_CHECK_RESULT;
 use ::common::mmap::advice::set_global;
+#[cfg(target_os = "linux")]
+use ::common::universal_io::disk_cache::CacheController;
 use ::tonic::transport::Uri;
 use api::grpc::transport_channel_pool::TransportChannelPool;
 use clap::Parser;

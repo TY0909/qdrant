@@ -30,7 +30,7 @@ const DELETED_HEADER: &[u8; HEADER_SIZE] = b"drop";
 pub struct ImmutableDenseVectors<T, S = StorageEnum<T>>
 where
     T: PrimitiveVectorElement,
-    S: UniversalRead<T>
+    S: UniversalRead<T>,
 {
     pub dim: usize,
     pub num_vectors: usize,

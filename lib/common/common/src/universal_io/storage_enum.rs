@@ -49,9 +49,10 @@ impl<T: bytemuck::Pod> UniversalRead<T> for StorageEnum<T> {
     {
         #[cfg(target_os = "linux")]
         if crate::universal_io::disk_cache::CacheController::global().is_some() {
-            let cached = <crate::universal_io::disk_cache::CachedSlice<T> as UniversalRead<T>>::open(
-                path, options,
-            )?;
+            let cached =
+                <crate::universal_io::disk_cache::CachedSlice<T> as UniversalRead<T>>::open(
+                    path, options,
+                )?;
             return Ok(Self::Cached(cached));
         }
 
