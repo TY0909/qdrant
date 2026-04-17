@@ -113,7 +113,7 @@ impl<SlowFile: UniversalRead<u8>> CacheController<SlowFile> {
 
         let cache_mmap = MmapRaw::map_raw(&cache_file)?;
 
-        cache_mmap.advise(Advice::HugePage)?;
+        cache_mmap.advise(Advice::Random)?;
 
         let size_blocks_u32: u32 = size_blocks.try_into().map_err(|_| {
             io::Error::new(
