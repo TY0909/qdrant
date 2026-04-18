@@ -23,6 +23,7 @@ pub mod iterator_ext;
 pub mod load_concurrency;
 pub mod math;
 pub mod maybe_uninit;
+pub mod memory_usage;
 pub mod mmap;
 pub mod mmap_hashmap;
 pub mod num_traits;
