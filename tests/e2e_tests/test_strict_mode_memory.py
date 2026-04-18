@@ -114,9 +114,13 @@ def _try_upsert(client: ClientUtils, points: list[models.PointStruct]) -> Option
 
 
 def _is_memory_rejection(err: str) -> bool:
-    """Distinguish the memory-threshold rejection from unrelated errors."""
-    lowered = err.lower()
-    return "resident memory" in lowered and "max_resident_memory_percent" in lowered
+    """Distinguish the memory-threshold rejection from unrelated errors.
+
+    Only check for the prefix of the server message — ``UnexpectedResponse``
+    truncates the raw body, so the ``max_resident_memory_percent`` hint at the
+    end may be cut off.
+    """
+    return "resident memory usage" in err.lower()
 
 
 class TestStrictModeMemory:
