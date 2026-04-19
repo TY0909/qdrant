@@ -1,17 +1,18 @@
+use common::generic_consts::{Random, Sequential};
+use common::universal_io::{ReadRange, UniversalIoError, UniversalRead};
+use posting_list::PostingListView;
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use zerocopy::FromBytes;
+
 use crate::common::operation_error::OperationResult;
-use crate::index::field_index::full_text_index::inverted_index::TokenId;
+use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::raw_posting_list::RawPostingList;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
     PostingListHeader, PostingsHeader, ZerocopyPostingValue,
 };
-use common::generic_consts::{Random, Sequential};
-use common::universal_io::{ReadRange, UniversalIoError, UniversalRead};
-use zerocopy::FromBytes;
-use common::ext::OptionExt;
-use posting_list::PostingListView;
-use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::raw_posting_list::RawPostingList;
+use crate::index::field_index::full_text_index::inverted_index::TokenId;
 
 #[allow(dead_code)]
 pub struct UniversalPostings<V: ZerocopyPostingValue, S: UniversalRead<u8>> {
@@ -21,61 +22,69 @@ pub struct UniversalPostings<V: ZerocopyPostingValue, S: UniversalRead<u8>> {
     _value_type: PhantomData<V>,
 }
 
+type HeaderResult = Result<(TokenId, PostingListHeader), UniversalIoError>;
+
+/// Output of [`UniversalPostings::headers_iter`]: a lazy iterator over the
+/// headers that are in range, paired with the pre-filtered list of token ids
+/// that were outside the valid range.
+struct HeadersBatch<'a> {
+    iter: Box<dyn Iterator<Item = HeaderResult> + 'a>,
+    missing: Vec<TokenId>,
+}
+
 #[allow(dead_code)]
 impl<V: ZerocopyPostingValue, S: UniversalRead<u8>> UniversalPostings<V, S> {
-    /// Fetch posting list headers for a batch of token ids.
+    /// Stream posting list headers for a batch of token ids.
     ///
-    /// Returns a vector of the same length as `token_ids`; entry `i` is `None`
-    /// for token ids outside the valid range, otherwise `Some(header)`.
-    fn with_all_headers(
-        &self,
-        token_ids: &[TokenId],
-        mut callback: impl FnMut(TokenId, Option<PostingListHeader>) -> Result<(), UniversalIoError>,
-    ) -> OperationResult<()> {
+    /// The returned [`HeadersBatch`] pairs a lazy iterator over the in-range
+    /// `(token_id, header)` pairs with the list of token ids that were
+    /// out-of-range. Iterator order is not guaranteed to match the input.
+    fn headers_iter(&self, token_ids: &[TokenId]) -> Result<HeadersBatch<'_>, UniversalIoError> {
         let header_length = size_of::<PostingListHeader>() as u64;
         let posting_count = self.header.posting_count;
 
-        let mut filtered_out = Vec::new();
+        let mut valid_ranges: Vec<(TokenId, ReadRange)> = Vec::with_capacity(token_ids.len());
+        let mut filtered_out: Vec<TokenId> = Vec::new();
 
-        let ranges = token_ids.iter().filter_map(|&token_id| {
+        for &token_id in token_ids {
             if posting_count <= token_id as usize {
                 filtered_out.push(token_id);
-                return None;
+                continue;
             }
             let header_offset =
                 size_of::<PostingsHeader>() as u64 + u64::from(token_id) * header_length;
 
-            Some((
+            valid_ranges.push((
                 token_id,
                 ReadRange {
                     byte_offset: header_offset,
                     length: header_length,
                 },
-            ))
-        });
-
-        self.storage
-            .read_batch::<Random, _>(ranges, |token_id, bytes| {
-                let (header, _) = PostingListHeader::read_from_prefix(bytes)?;
-                callback(token_id, Some(header))
-            })?;
-
-        // Explicitly report missing posting lists
-        // after the `ranges` iterator is consumed.
-        for token_id in filtered_out {
-            callback(token_id, None)?;
+            ));
         }
 
-        Ok(())
+        let valid_iter = self
+            .storage
+            .read_iter::<Random, _>(valid_ranges)?
+            .map(|res| {
+                let (token_id, bytes) = res?;
+                let (header, _) = PostingListHeader::read_from_prefix(bytes.as_ref())?;
+                Ok((token_id, header))
+            });
+
+        Ok(HeadersBatch {
+            iter: Box::new(valid_iter),
+            missing: filtered_out,
+        })
     }
 
     fn get_header(&self, token_id: TokenId) -> OperationResult<Option<Cow<'_, PostingListHeader>>> {
-        let mut result = None;
-        self.with_all_headers(&[token_id], |_token_id, header| {
-            result.replace_if_some(header.map(Cow::Owned));
-            Ok(())
-        })?;
-        Ok(result)
+        let HeadersBatch { mut iter, .. } = self.headers_iter(&[token_id])?;
+        let Some(entry) = iter.next() else {
+            return Ok(None);
+        };
+        let (_, header) = entry?;
+        Ok(Some(Cow::Owned(header)))
     }
 
     /// Create PostingListView<V> from the given header
@@ -112,14 +121,55 @@ impl<V: ZerocopyPostingValue, S: UniversalRead<u8>> UniversalPostings<V, S> {
         Ok(None)
     }
 
-    /// Retrieves all-or-nothing posting lists.
-    /// If at least one token is not present, returns `None`.
-    /// All posting list at once are propagated into callback
-    pub fn with_all_postings<T>(
+    /// Fetch posting lists for the given token ids and hand them to `callback`.
+    /// If any of posting lists is not found - return `None`.
+    pub fn with_all_or_none_postings<T>(
         &self,
-        _token_ids: &[TokenId],
-        _callback: impl FnOnce(Vec<(TokenId, PostingListView<'_, V>)>) -> OperationResult<T>,
+        token_ids: &[TokenId],
+        callback: impl FnOnce(Vec<(TokenId, PostingListView<'_, V>)>) -> OperationResult<T>,
     ) -> OperationResult<Option<T>> {
-        todo!()
+        let header_err: Cell<Option<UniversalIoError>> = Cell::new(None);
+
+        let HeadersBatch {
+            iter: header_iter,
+            missing,
+        } = self.headers_iter(token_ids)?;
+
+        if !missing.is_empty() {
+            return Ok(None);
+        }
+
+        let range_iter = header_iter.filter_map(|header_res| match header_res {
+            Ok((token_id, header)) => {
+                let range = ReadRange {
+                    byte_offset: header.offset,
+                    length: header.posting_size::<V>() as u64,
+                };
+                Some(((token_id, header), range))
+            }
+            Err(err) => {
+                header_err.set(Some(err));
+                None
+            }
+        });
+
+        let mut raw_postings: Vec<(TokenId, RawPostingList<'_>)> =
+            Vec::with_capacity(token_ids.len());
+
+        for entry in self.storage.read_iter::<Sequential, _>(range_iter)? {
+            let ((token_id, header), bytes) = entry?;
+            raw_postings.push((token_id, RawPostingList::new(bytes, Cow::Owned(header))));
+        }
+
+        if let Some(err) = header_err.take() {
+            return Err(err.into());
+        }
+
+        let views: Vec<(TokenId, PostingListView<'_, V>)> = raw_postings
+            .iter()
+            .map(|(token_id, raw)| raw.as_view::<V>().map(|view| (*token_id, view)))
+            .collect::<OperationResult<_>>()?;
+
+        callback(views).map(Some)
     }
 }
