@@ -278,15 +278,16 @@ impl MmapInvertedIndex {
             tokens: &TokenSet,
             point_id: PointOffsetType,
         ) -> bool {
+            let all_postings_opt = postings.get_all_or_none(tokens.tokens());
+            let Some(all_postings) = all_postings_opt else {
+                // There are unseen tokens -> no matches
+                return false;
+            };
+
             // Check that all tokens are in document
-            tokens.tokens().iter().all(|query_token| {
-                postings
-                    .get(*query_token)
-                    // unwrap safety: all tokens exist in the vocabulary, otherwise there'd be no query tokens
-                    .unwrap()
-                    .visitor()
-                    .contains(point_id)
-            })
+            all_postings
+                .into_iter()
+                .all(|(_token_id, posting)| posting.visitor().contains(point_id))
         }
 
         match &self.storage.postings {
@@ -312,11 +313,11 @@ impl MmapInvertedIndex {
             tokens: &TokenSet,
             point_id: PointOffsetType,
         ) -> bool {
-            // Check that at least one token is in document
-            tokens.tokens().iter().any(|token_id| {
-                let posting_list = postings.get(*token_id).unwrap();
-                posting_list.visitor().contains(point_id)
-            })
+            let all_postings = postings.get_existing(tokens.tokens());
+
+            all_postings
+                .into_iter()
+                .any(|posting| posting.visitor().contains(point_id))
         }
 
         match &self.storage.postings {
