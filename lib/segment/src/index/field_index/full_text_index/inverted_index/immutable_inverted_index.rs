@@ -471,18 +471,10 @@ fn create_compressed_postings_with_positions(
 impl From<&MmapInvertedIndex> for ImmutableInvertedIndex {
     fn from(index: &MmapInvertedIndex) -> Self {
         let postings = match &index.storage.postings {
-            MmapPostingsEnum::Ids(postings) => ImmutablePostings::Ids(
-                postings
-                    .iter_postings()
-                    .map(PostingListView::to_owned)
-                    .collect(),
-            ),
-            MmapPostingsEnum::WithPositions(postings) => ImmutablePostings::WithPositions(
-                postings
-                    .iter_postings()
-                    .map(PostingListView::to_owned)
-                    .collect(),
-            ),
+            MmapPostingsEnum::Ids(postings) => ImmutablePostings::Ids(postings.all_postings()),
+            MmapPostingsEnum::WithPositions(postings) => {
+                ImmutablePostings::WithPositions(postings.all_postings())
+            }
         };
 
         let vocab: HashMap<String, TokenId> = index

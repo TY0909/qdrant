@@ -316,9 +316,11 @@ impl<V: ZerocopyPostingValue> MmapPostings<V> {
     }
 
     /// Iterate over posting lists, returning a view for each
-    pub fn iter_postings<'a>(&'a self) -> impl Iterator<Item = PostingListView<'a, V>> {
+    pub fn all_postings(&self) -> Vec<PostingList<V>> {
         (0..self.header.posting_count as u32)
             // we are iterating over existing posting lists, all of them should return `Some`
             .filter_map(|posting_idx| self.get(posting_idx))
+            .map(|posting| posting.to_owned())
+            .collect()
     }
 }
