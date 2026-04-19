@@ -1,6 +1,6 @@
 use common::generic_consts::{Random, Sequential};
 use common::universal_io::{ReadRange, UniversalIoError, UniversalRead};
-use posting_list::PostingListView;
+use posting_list::{PostingList, PostingListView};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -199,5 +199,20 @@ impl<V: ZerocopyPostingValue, S: UniversalRead<u8>> UniversalPostings<V, S> {
         } = self.headers_iter(token_ids)?;
 
         self.with_posting_views(header_iter, token_ids.len(), callback)
+    }
+
+    pub fn all_postings(&self) -> OperationResult<Vec<PostingList<V>>> {
+        let mut result = Vec::new();
+        let all_tokens = (0..self.header.posting_count as TokenId).collect::<Vec<_>>();
+
+        self.with_existing_postings(&all_tokens, |views| {
+            for (_, view) in views {
+                let posting_list = view.to_owned();
+                result.push(posting_list);
+            }
+            Ok(())
+        })?;
+
+        Ok(result)
     }
 }
