@@ -1,5 +1,7 @@
 use common::types::PointOffsetType;
-use posting_list::{PostingChunk, PostingValue, RemainderPosting, SizedTypeFor, ValueHandler};
+use posting_list::{
+    CHUNK_LEN, PostingChunk, PostingValue, RemainderPosting, SizedTypeFor, ValueHandler,
+};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
@@ -57,5 +59,10 @@ impl PostingListHeader {
             + self.remainder_count as usize * size_of::<RemainderPosting<SizedTypeFor<V>>>()
             + self.chunks_count as usize * size_of::<PostingChunk<SizedTypeFor<V>>>()
             + size_of::<PointOffsetType>() // last_doc_id
+    }
+
+    /// Number of elements in the posting list. Matches `PostingListView::len`.
+    pub fn posting_len(&self) -> usize {
+        self.chunks_count as usize * CHUNK_LEN + self.remainder_count as usize
     }
 }

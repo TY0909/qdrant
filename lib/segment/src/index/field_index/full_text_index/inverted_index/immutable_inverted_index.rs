@@ -298,24 +298,35 @@ impl InvertedIndex for ImmutableInvertedIndex {
         }
     }
 
-    fn get_posting_len(&self, token_id: TokenId, _: &HardwareCounterCell) -> Option<usize> {
-        self.postings.posting_len(token_id)
+    fn get_posting_len(
+        &self,
+        token_id: TokenId,
+        _: &HardwareCounterCell,
+    ) -> OperationResult<Option<usize>> {
+        Ok(self.postings.posting_len(token_id))
     }
 
-    fn vocab_with_postings_len_iter(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
+    fn vocab_with_postings_len_iter(
+        &self,
+    ) -> impl Iterator<Item = OperationResult<(&str, usize)>> + '_ {
         self.vocab.iter().filter_map(|(token, &token_id)| {
             self.postings
                 .posting_len(token_id)
-                .map(|len| (token.as_str(), len))
+                .map(|len| Ok((token.as_str(), len)))
         })
     }
 
-    fn check_match(&self, parsed_query: &ParsedQuery, point_id: PointOffsetType) -> bool {
-        match parsed_query {
+    fn check_match(
+        &self,
+        parsed_query: &ParsedQuery,
+        point_id: PointOffsetType,
+    ) -> OperationResult<bool> {
+        let matched = match parsed_query {
             ParsedQuery::AllTokens(tokens) => self.check_has_subset(tokens, point_id),
             ParsedQuery::Phrase(phrase) => self.check_has_phrase(phrase, point_id),
             ParsedQuery::AnyTokens(tokens) => self.check_has_any(tokens, point_id),
-        }
+        };
+        Ok(matched)
     }
 
     fn values_is_empty(&self, point_id: PointOffsetType) -> bool {
@@ -474,12 +485,14 @@ fn create_compressed_postings_with_positions(
             .collect()
 }
 
-impl From<&MmapInvertedIndex> for ImmutableInvertedIndex {
-    fn from(index: &MmapInvertedIndex) -> Self {
+impl TryFrom<&MmapInvertedIndex> for ImmutableInvertedIndex {
+    type Error = OperationError;
+
+    fn try_from(index: &MmapInvertedIndex) -> OperationResult<Self> {
         let postings = match &index.storage.postings {
-            MmapPostingsEnum::Ids(postings) => ImmutablePostings::Ids(postings.all_postings()),
+            MmapPostingsEnum::Ids(postings) => ImmutablePostings::Ids(postings.all_postings()?),
             MmapPostingsEnum::WithPositions(postings) => {
-                ImmutablePostings::WithPositions(postings.all_postings())
+                ImmutablePostings::WithPositions(postings.all_postings()?)
             }
         };
 
@@ -495,12 +508,12 @@ impl From<&MmapInvertedIndex> for ImmutableInvertedIndex {
             "postings and vocab must be the same size",
         );
 
-        ImmutableInvertedIndex {
+        Ok(ImmutableInvertedIndex {
             postings,
             vocab,
             point_to_tokens_count: index.storage.point_to_tokens_count.to_vec(),
             points_count: index.points_count(),
-        }
+        })
     }
 }
 

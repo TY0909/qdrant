@@ -1,19 +1,29 @@
-use common::generic_consts::{Random, Sequential};
-use common::universal_io::{ReadRange, UniversalIoError, UniversalRead};
-use posting_list::{PostingList, PostingListView};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+
+use common::generic_consts::{Random, Sequential};
+use common::universal_io::{OpenOptions, ReadRange, UniversalIoError, UniversalRead};
+use posting_list::{PostingList, PostingListView};
 use zerocopy::FromBytes;
 
 use crate::common::operation_error::OperationResult;
+use crate::index::field_index::full_text_index::inverted_index::TokenId;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::raw_posting_list::RawPostingList;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
     PostingListHeader, PostingsHeader, ZerocopyPostingValue,
 };
-use crate::index::field_index::full_text_index::inverted_index::TokenId;
 
+/// Posting lists stored on disk and accessed via the [`UniversalRead`]
+/// abstraction. The on-disk layout is produced by
+/// [`create_postings_file`](super::create_postings::create_postings_file)
+/// and matches the layout documented there.
+///
+/// `get_header(token_id)` indexes the per-token header array directly:
+/// `size_of::<PostingsHeader>() + token_id * size_of::<PostingListHeader>()`.
+/// Each [`PostingListHeader`] then points (via absolute `offset`) into the
+/// posting-data region.
 #[allow(dead_code)]
 pub struct UniversalPostings<V: ZerocopyPostingValue, S: UniversalRead<u8>> {
     _path: PathBuf,
@@ -34,6 +44,41 @@ struct HeadersBatch<'a> {
 
 #[allow(dead_code)]
 impl<V: ZerocopyPostingValue, S: UniversalRead<u8>> UniversalPostings<V, S> {
+    /// Open the postings file at `path` via the `S` storage backend.
+    pub fn open(path: impl Into<PathBuf>, options: OpenOptions) -> OperationResult<Self> {
+        let path = path.into();
+        let storage = S::open(&path, options)?;
+
+        let header_bytes = storage.read::<Sequential>(ReadRange {
+            byte_offset: 0,
+            length: size_of::<PostingsHeader>() as u64,
+        })?;
+
+        let (header, _) = PostingsHeader::read_from_prefix(header_bytes.as_ref())?;
+
+        Ok(Self {
+            _path: path,
+            storage,
+            header,
+            _value_type: PhantomData,
+        })
+    }
+
+    /// Hint the storage backend to populate any RAM cache backing this file.
+    /// For mmap-backed storage this is `madvise(MADV_POPULATE_READ)` and blocks
+    /// until pages are populated.
+    pub fn populate(&self) -> OperationResult<()> {
+        self.storage.populate()?;
+        Ok(())
+    }
+
+    /// Hint the storage backend to drop any RAM cache backing this file.
+    /// For mmap-backed storage this is `madvise(MADV_PAGEOUT)`.
+    pub fn clear_cache(&self) -> OperationResult<()> {
+        self.storage.clear_ram_cache()?;
+        Ok(())
+    }
+
     /// Stream posting list headers for a batch of token ids.
     ///
     /// The returned [`HeadersBatch`] pairs a lazy iterator over the in-range
@@ -119,6 +164,12 @@ impl<V: ZerocopyPostingValue, S: UniversalRead<u8>> UniversalPostings<V, S> {
             return Ok(posting);
         }
         Ok(None)
+    }
+
+    /// Number of elements in the posting list for `token_id`. Reads only the
+    /// per-token header, not the posting bytes.
+    pub fn posting_len(&self, token_id: TokenId) -> OperationResult<Option<usize>> {
+        Ok(self.get_header(token_id)?.map(|h| h.posting_len()))
     }
 
     /// Read the posting lists for every header yielded by `header_iter` and

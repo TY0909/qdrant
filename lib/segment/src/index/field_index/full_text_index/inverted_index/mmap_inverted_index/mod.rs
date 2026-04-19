@@ -3,14 +3,14 @@ use std::path::PathBuf;
 
 use common::bitvec::BitVec;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::mmap::{self, AdviceSetting, MmapSlice, create_and_ensure_length};
+use common::mmap::{self, Advice, AdviceSetting, MmapSlice, create_and_ensure_length};
 use common::mmap_hashmap::{MmapHashMap, READ_ENTRY_OVERHEAD};
 use common::types::PointOffsetType;
 use common::universal_io::{MmapFile, OpenOptions};
-use itertools::Either;
-use mmap_postings::MmapPostings;
 use types::ZerocopyPostingValue;
+use uio_postings::UniversalPostings;
 
+use self::create_postings::create_postings_file;
 use super::immutable_inverted_index::ImmutableInvertedIndex;
 use super::immutable_postings_enum::ImmutablePostings;
 use super::mmap_inverted_index::mmap_postings_enum::MmapPostingsEnum;
@@ -28,7 +28,7 @@ use crate::index::field_index::full_text_index::inverted_index::postings_iterato
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
 
-pub(super) mod mmap_postings;
+mod create_postings;
 pub mod mmap_postings_enum;
 mod raw_posting_list;
 pub(in crate::index::field_index::full_text_index) mod types;
@@ -72,9 +72,9 @@ impl MmapInvertedIndex {
         let deleted_points_path = path.join(DELETED_POINTS_FILE);
 
         match postings {
-            ImmutablePostings::Ids(postings) => MmapPostings::create(postings_path, postings)?,
+            ImmutablePostings::Ids(postings) => create_postings_file(postings_path, postings)?,
             ImmutablePostings::WithPositions(postings) => {
-                MmapPostings::create(postings_path, postings)?
+                create_postings_file(postings_path, postings)?
             }
         }
 
@@ -130,12 +130,25 @@ impl MmapInvertedIndex {
             return Ok(None);
         }
 
+        let postings_open_options = OpenOptions {
+            writeable: false,
+            need_sequential: false,
+            disk_parallel: None,
+            populate: Some(populate),
+            advice: Some(AdviceSetting::Advice(Advice::Normal)),
+            prevent_caching: None,
+        };
         let postings = match has_positions {
-            false => MmapPostingsEnum::Ids(MmapPostings::<()>::open(&postings_path, populate)?),
-            true => MmapPostingsEnum::WithPositions(MmapPostings::<Positions>::open(
+            false => MmapPostingsEnum::Ids(UniversalPostings::<(), MmapFile>::open(
                 &postings_path,
-                populate,
+                postings_open_options,
             )?),
+            true => {
+                MmapPostingsEnum::WithPositions(UniversalPostings::<Positions, MmapFile>::open(
+                    &postings_path,
+                    postings_open_options,
+                )?)
+            }
         };
         let vocab = MmapHashMap::<str, TokenId>::open(&vocab_path, false)?;
 
@@ -189,40 +202,33 @@ impl MmapInvertedIndex {
         !is_deleted
     }
 
-    /// Iterate over point ids whose documents contain all given tokens
-    pub fn filter_has_all<'a>(
-        &'a self,
-        tokens: TokenSet,
-    ) -> Box<dyn Iterator<Item = PointOffsetType> + 'a> {
+    /// Iterate over point ids whose documents contain all given tokens.
+    ///
+    /// Pre-collected upfront because [`UniversalPostings`] exposes posting
+    /// views via a `FnOnce` callback. Acceptable since this index lives
+    /// on disk.
+    pub fn filter_has_all(&self, tokens: TokenSet) -> OperationResult<Vec<PointOffsetType>> {
         // in case of mmap immutable index, deleted points are still in the postings
         let filter = move |idx| self.is_active(idx);
 
-        fn intersection<'a, V: ZerocopyPostingValue>(
-            postings: &'a MmapPostings<V>,
+        fn intersection<V: ZerocopyPostingValue>(
+            postings: &UniversalPostings<V, MmapFile>,
             tokens: TokenSet,
-            filter: impl Fn(u32) -> bool + 'a,
-        ) -> Box<dyn Iterator<Item = PointOffsetType> + 'a> {
-            let postings_opt = postings.get_all_or_none(tokens.tokens());
-
-            let Some(posting_readers) = postings_opt else {
-                // There are unseen tokens -> no matches
-                return Box::new(std::iter::empty());
-            };
-
-            if posting_readers.is_empty() {
-                // Empty request -> no matches
-                return Box::new(std::iter::empty());
-            }
-
-            let posting_readers = posting_readers
-                .into_iter()
-                .map(|(_token_id, posting_list_view)| posting_list_view)
-                .collect();
-
-            Box::new(intersect_compressed_postings_iterator(
-                posting_readers,
-                filter,
-            ))
+            filter: impl Fn(PointOffsetType) -> bool,
+        ) -> OperationResult<Vec<PointOffsetType>> {
+            let result =
+                postings.with_all_or_none_postings(tokens.tokens(), |posting_readers| {
+                    if posting_readers.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    let posting_readers = posting_readers
+                        .into_iter()
+                        .map(|(_token_id, posting_list_view)| posting_list_view)
+                        .collect();
+                    Ok(intersect_compressed_postings_iterator(posting_readers, filter).collect())
+                })?;
+            // Some token has no posting list -> no matches
+            Ok(result.unwrap_or_default())
         }
 
         match &self.storage.postings {
@@ -232,62 +238,60 @@ impl MmapInvertedIndex {
     }
 
     /// Iterate over point ids whose documents contain at least one of the given tokens
-    fn filter_has_any<'a>(
-        &'a self,
-        tokens: TokenSet,
-    ) -> impl Iterator<Item = PointOffsetType> + 'a {
+    fn filter_has_any(&self, tokens: TokenSet) -> OperationResult<Vec<PointOffsetType>> {
         // in case of immutable index, deleted documents are still in the postings
         let is_active = move |idx| self.is_active(idx);
 
-        fn merge<'a, V: ZerocopyPostingValue>(
-            postings: &'a MmapPostings<V>,
+        fn merge<V: ZerocopyPostingValue>(
+            postings: &UniversalPostings<V, MmapFile>,
             tokens: TokenSet,
-            is_active: impl Fn(PointOffsetType) -> bool + 'a,
-        ) -> impl Iterator<Item = PointOffsetType> + 'a {
-            let postings = postings.get_existing(tokens.tokens());
-
-            // Query must not be empty
-            if postings.is_empty() {
-                return Either::Left(std::iter::empty());
-            };
-
-            Either::Right(merge_compressed_postings_iterator(postings, is_active))
+            is_active: impl Fn(PointOffsetType) -> bool,
+        ) -> OperationResult<Vec<PointOffsetType>> {
+            postings.with_existing_postings(tokens.tokens(), |posting_readers| {
+                if posting_readers.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let posting_readers = posting_readers
+                    .into_iter()
+                    .map(|(_token_id, posting_list_view)| posting_list_view)
+                    .collect();
+                Ok(merge_compressed_postings_iterator(posting_readers, is_active).collect())
+            })
         }
 
         match &self.storage.postings {
-            MmapPostingsEnum::Ids(postings) => Either::Left(merge(postings, tokens, is_active)),
-            MmapPostingsEnum::WithPositions(postings) => {
-                Either::Right(merge(postings, tokens, is_active))
-            }
+            MmapPostingsEnum::Ids(postings) => merge(postings, tokens, is_active),
+            MmapPostingsEnum::WithPositions(postings) => merge(postings, tokens, is_active),
         }
     }
 
-    fn check_has_subset(&self, tokens: &TokenSet, point_id: PointOffsetType) -> bool {
+    fn check_has_subset(
+        &self,
+        tokens: &TokenSet,
+        point_id: PointOffsetType,
+    ) -> OperationResult<bool> {
         // check non-empty query
         if tokens.is_empty() {
-            return false;
+            return Ok(false);
         }
 
         // check presence of the document
         if self.values_is_empty(point_id) {
-            return false;
+            return Ok(false);
         }
 
         fn check_intersection<V: ZerocopyPostingValue>(
-            postings: &MmapPostings<V>,
+            postings: &UniversalPostings<V, MmapFile>,
             tokens: &TokenSet,
             point_id: PointOffsetType,
-        ) -> bool {
-            let all_postings_opt = postings.get_all_or_none(tokens.tokens());
-            let Some(all_postings) = all_postings_opt else {
-                // There are unseen tokens -> no matches
-                return false;
-            };
-
-            // Check that all tokens are in document
-            all_postings
-                .into_iter()
-                .all(|(_token_id, posting)| posting.visitor().contains(point_id))
+        ) -> OperationResult<bool> {
+            let result = postings.with_all_or_none_postings(tokens.tokens(), |all_postings| {
+                Ok(all_postings
+                    .into_iter()
+                    .all(|(_token_id, posting)| posting.visitor().contains(point_id)))
+            })?;
+            // Some token has no posting list -> no match
+            Ok(result.unwrap_or(false))
         }
 
         match &self.storage.postings {
@@ -298,26 +302,26 @@ impl MmapInvertedIndex {
         }
     }
 
-    fn check_has_any(&self, tokens: &TokenSet, point_id: PointOffsetType) -> bool {
+    fn check_has_any(&self, tokens: &TokenSet, point_id: PointOffsetType) -> OperationResult<bool> {
         if tokens.is_empty() {
-            return false;
+            return Ok(false);
         }
 
         // check presence of the document
         if self.values_is_empty(point_id) {
-            return false;
+            return Ok(false);
         }
 
         fn check_any<V: ZerocopyPostingValue>(
-            postings: &MmapPostings<V>,
+            postings: &UniversalPostings<V, MmapFile>,
             tokens: &TokenSet,
             point_id: PointOffsetType,
-        ) -> bool {
-            let all_postings = postings.get_existing(tokens.tokens());
-
-            all_postings
-                .into_iter()
-                .any(|posting| posting.visitor().contains(point_id))
+        ) -> OperationResult<bool> {
+            postings.with_existing_postings(tokens.tokens(), |all_postings| {
+                Ok(all_postings
+                    .into_iter()
+                    .any(|(_token_id, posting)| posting.visitor().contains(point_id)))
+            })
         }
 
         match &self.storage.postings {
@@ -327,7 +331,7 @@ impl MmapInvertedIndex {
     }
 
     /// Iterate over point ids whose documents contain all given tokens in the same order they are provided
-    pub fn filter_has_phrase(&self, phrase: Document) -> Vec<PointOffsetType> {
+    pub fn filter_has_phrase(&self, phrase: Document) -> OperationResult<Vec<PointOffsetType>> {
         // in case of mmap immutable index, deleted points are still in the postings
         let is_active = move |idx| self.is_active(idx);
 
@@ -337,40 +341,53 @@ impl MmapInvertedIndex {
                 // not fetch the same posting list twice, otherwise positions get
                 // added twice in `phrase_in_all_postings`.
                 let unique_tokens = phrase.to_token_set();
-                if let Some(selected_postings) = postings.get_all_or_none(unique_tokens.tokens()) {
-                    intersect_compressed_postings_phrase_iterator(
-                        phrase,
-                        selected_postings,
-                        is_active,
-                    )
-                    .collect()
-                } else {
-                    Vec::new()
-                }
+                let result = postings.with_all_or_none_postings(
+                    unique_tokens.tokens(),
+                    |selected_postings| {
+                        Ok(intersect_compressed_postings_phrase_iterator(
+                            phrase,
+                            selected_postings,
+                            is_active,
+                        )
+                        .collect())
+                    },
+                )?;
+                // Some token has no posting list -> no matches
+                Ok(result.unwrap_or_default())
             }
             // cannot do phrase matching if there's no positional information
-            MmapPostingsEnum::Ids(_postings) => Vec::new(),
+            MmapPostingsEnum::Ids(_postings) => Ok(Vec::new()),
         }
     }
 
-    pub fn check_has_phrase(&self, phrase: &Document, point_id: PointOffsetType) -> bool {
+    pub fn check_has_phrase(
+        &self,
+        phrase: &Document,
+        point_id: PointOffsetType,
+    ) -> OperationResult<bool> {
         // in case of mmap immutable index, deleted points are still in the postings
         if !self.is_active(point_id) {
-            return false;
+            return Ok(false);
         }
 
         match &self.storage.postings {
             MmapPostingsEnum::WithPositions(postings) => {
                 let unique_tokens = phrase.to_token_set();
-                let Some(selected_postings) = postings.get_all_or_none(unique_tokens.tokens())
-                else {
-                    return false;
-                };
-
-                check_compressed_postings_phrase(phrase, point_id, selected_postings)
+                let result = postings.with_all_or_none_postings(
+                    unique_tokens.tokens(),
+                    |selected_postings| {
+                        Ok(check_compressed_postings_phrase(
+                            phrase,
+                            point_id,
+                            selected_postings,
+                        ))
+                    },
+                )?;
+                // Some token has no posting list -> no match
+                Ok(result.unwrap_or(false))
             }
             // cannot do phrase matching if there's no positional information
-            MmapPostingsEnum::Ids(_postings) => false,
+            MmapPostingsEnum::Ids(_postings) => Ok(false),
         }
     }
 
@@ -398,7 +415,7 @@ impl MmapInvertedIndex {
     /// Populate all pages in the mmap.
     /// Block until all pages are populated.
     pub fn populate(&self) -> OperationResult<()> {
-        self.storage.postings.populate();
+        self.storage.postings.populate()?;
         self.storage.vocab.populate()?;
         self.storage.point_to_tokens_count.populate()?;
         Ok(())
@@ -418,7 +435,7 @@ impl MmapInvertedIndex {
             point_to_tokens_count,
             deleted_points,
         } = storage;
-        postings.clear_cache();
+        postings.clear_cache()?;
         vocab.clear_cache()?;
         point_to_tokens_count.clear_cache()?;
         deleted_points.clear_cache()?;
@@ -479,31 +496,41 @@ impl InvertedIndex for MmapInvertedIndex {
         query: ParsedQuery,
         _hw_counter: &HardwareCounterCell,
     ) -> OperationResult<Box<dyn Iterator<Item = PointOffsetType> + 'a>> {
-        match query {
-            ParsedQuery::AllTokens(tokens) => Ok(self.filter_has_all(tokens)),
-            ParsedQuery::Phrase(phrase) => Ok(Box::new(self.filter_has_phrase(phrase).into_iter())),
-            ParsedQuery::AnyTokens(tokens) => Ok(Box::new(self.filter_has_any(tokens))),
-        }
+        let ids = match query {
+            ParsedQuery::AllTokens(tokens) => self.filter_has_all(tokens)?,
+            ParsedQuery::Phrase(phrase) => self.filter_has_phrase(phrase)?,
+            ParsedQuery::AnyTokens(tokens) => self.filter_has_any(tokens)?,
+        };
+        Ok(Box::new(ids.into_iter()))
     }
 
     fn get_posting_len(
         &self,
         token_id: TokenId,
         _hw_counter: &HardwareCounterCell,
-    ) -> Option<usize> {
+    ) -> OperationResult<Option<usize>> {
         self.storage.postings.posting_len(token_id)
     }
 
-    fn vocab_with_postings_len_iter(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
+    fn vocab_with_postings_len_iter(
+        &self,
+    ) -> impl Iterator<Item = OperationResult<(&str, usize)>> + '_ {
         self.iter_vocab().filter_map(move |(token, &token_id)| {
-            self.storage
-                .postings
-                .posting_len(token_id)
-                .map(|posting_len| (token, posting_len))
+            // Surface read errors as iterator items; drop tokens with no
+            // posting list silently (same as the in-memory variants).
+            match self.storage.postings.posting_len(token_id) {
+                Ok(Some(posting_len)) => Some(Ok((token, posting_len))),
+                Ok(None) => None,
+                Err(err) => Some(Err(err)),
+            }
         })
     }
 
-    fn check_match(&self, parsed_query: &ParsedQuery, point_id: PointOffsetType) -> bool {
+    fn check_match(
+        &self,
+        parsed_query: &ParsedQuery,
+        point_id: PointOffsetType,
+    ) -> OperationResult<bool> {
         match parsed_query {
             ParsedQuery::AllTokens(tokens) => self.check_has_subset(tokens, point_id),
             ParsedQuery::Phrase(phrase) => self.check_has_phrase(phrase, point_id),
