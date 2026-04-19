@@ -1,11 +1,13 @@
+use std::borrow::Cow;
+
+use common::types::PointOffsetType;
+use posting_list::{PostingChunk, PostingListView, RemainderPosting, SizedTypeFor};
+use zerocopy::FromBytes;
+
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
     PostingListHeader, ZerocopyPostingValue,
 };
-use common::types::PointOffsetType;
-use posting_list::{PostingChunk, PostingListView, RemainderPosting, SizedTypeFor};
-use std::borrow::Cow;
-use zerocopy::FromBytes;
 
 /// Raw byte representation of posting list, which can be converted into [`PostingListView`]
 pub struct RawPostingList<'a> {

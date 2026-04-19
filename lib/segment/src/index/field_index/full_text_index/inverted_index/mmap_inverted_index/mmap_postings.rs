@@ -1,3 +1,8 @@
+use std::io;
+use std::io::Write;
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
+
 use common::mmap::{Advice, AdviceSetting, Madviseable, open_read_mmap};
 use common::types::PointOffsetType;
 use common::zeros::WriteZerosExt;
@@ -7,10 +12,6 @@ use posting_list::{
     PostingChunk, PostingList, PostingListComponents, PostingListView, RemainderPosting,
     SizedTypeFor,
 };
-use std::io;
-use std::io::Write;
-use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
 use zerocopy::{FromBytes, IntoBytes};
 
 use crate::index::field_index::full_text_index::inverted_index::TokenId;
