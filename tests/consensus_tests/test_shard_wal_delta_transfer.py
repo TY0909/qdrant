@@ -179,14 +179,16 @@ def test_shard_wal_delta_transfer_manual_recovery(tmp_path: pathlib.Path):
 
     # Kill last peer
     upload_process_3.kill()
-    processes.pop().kill()
+    p = processes.pop()
+    restart_port = p.p2p_port
+    p.kill()
 
     upsert_random_points(peer_api_uris[0], 100, batch_size=5)
 
     sleep(3)
 
     # Restart the peer
-    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, extra_env=env)
+    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, port=restart_port, extra_env=env)
     wait_for_peer_online(peer_api_uris[-1], "/")
 
     # Recover shard with WAL delta transfer
@@ -270,21 +272,25 @@ def test_shard_wal_delta_transfer_manual_recovery_chain(tmp_path: pathlib.Path):
 
     # Kill 5th peer
     upload_process_5.kill()
-    processes.pop().kill()
+    p5 = processes.pop()
+    restart_port_5 = p5.p2p_port
+    p5.kill()
 
     sleep(1)
 
     # Kill 4th peer
     upload_process_4.kill()
-    processes.pop().kill()
+    p4 = processes.pop()
+    restart_port_4 = p4.p2p_port
+    p4.kill()
 
     upsert_random_points(peer_api_uris[0], 100, batch_size=5)
 
     sleep(3)
 
-    # Restart 3rd and 4th peer
-    peer_api_uris[3] = start_peer(peer_dirs[3], "peer_3_restarted.log", bootstrap_uri, extra_env=env)
-    peer_api_uris[4] = start_peer(peer_dirs[4], "peer_4_restarted.log", bootstrap_uri, extra_env=env)
+    # Restart 4th and 5th peer on same ports
+    peer_api_uris[3] = start_peer(peer_dirs[3], "peer_3_restarted.log", bootstrap_uri, port=restart_port_4, extra_env=env)
+    peer_api_uris[4] = start_peer(peer_dirs[4], "peer_4_restarted.log", bootstrap_uri, port=restart_port_5, extra_env=env)
     wait_for_peer_online(peer_api_uris[3], "/")
     wait_for_peer_online(peer_api_uris[4], "/")
 
@@ -393,7 +399,9 @@ def test_shard_wal_delta_transfer_abort_and_retry(tmp_path: pathlib.Path):
 
     # Kill last peer
     upload_process_3.kill()
-    processes.pop().kill()
+    p = processes.pop()
+    restart_port = p.p2p_port
+    p.kill()
 
     sleep(1)
 
@@ -402,7 +410,7 @@ def test_shard_wal_delta_transfer_abort_and_retry(tmp_path: pathlib.Path):
     sleep(3)
 
     # Restart the peer
-    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, extra_env=env)
+    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, port=restart_port, extra_env=env)
     wait_for_peer_online(peer_api_uris[-1], "/")
 
     # Recover shard with WAL delta transfer
@@ -580,7 +588,9 @@ def test_shard_fallback_on_big_diff(tmp_path: pathlib.Path):
     sleep(1)
 
     # Kill last peer
-    processes.pop().kill()
+    p = processes.pop()
+    restart_port = p.p2p_port
+    p.kill()
 
     sleep(1)
 
@@ -590,7 +600,7 @@ def test_shard_fallback_on_big_diff(tmp_path: pathlib.Path):
     sleep(1)
 
     # Restart the peer
-    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, extra_env=env)
+    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, port=restart_port, extra_env=env)
     wait_for_peer_online(peer_api_uris[-1], "/")
 
 
@@ -678,13 +688,15 @@ def test_abort_stream_records_breaks_wal_delta(tmp_path: pathlib.Path):
     sleep(1)
 
     # Kill last peer
-    processes.pop().kill()
+    p = processes.pop()
+    restart_port = p.p2p_port
+    p.kill()
 
     # Upsert data, last peer won't receive it
     upsert_random_points(peer_api_uris[0], 2000, COLLECTION_NAME, batch_size=100)
 
     # Restart the peer
-    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, extra_env=env)
+    peer_api_uris[-1] = start_peer(peer_dirs[-1], "peer_2_restarted.log", bootstrap_uri, port=restart_port, extra_env=env)
     wait_for_peer_online(peer_api_uris[-1], "/")
 
     # Recover shard with stream records transfer
