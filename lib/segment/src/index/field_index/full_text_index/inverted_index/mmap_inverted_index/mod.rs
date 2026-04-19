@@ -333,7 +333,11 @@ impl MmapInvertedIndex {
 
         match &self.storage.postings {
             MmapPostingsEnum::WithPositions(postings) => {
-                if let Some(selected_postings) = postings.get_all_or_none(phrase.tokens()) {
+                // Deduplicate phrase tokens: repeated tokens (e.g. "zn zn") must
+                // not fetch the same posting list twice, otherwise positions get
+                // added twice in `phrase_in_all_postings`.
+                let unique_tokens = phrase.to_token_set();
+                if let Some(selected_postings) = postings.get_all_or_none(unique_tokens.tokens()) {
                     intersect_compressed_postings_phrase_iterator(
                         phrase,
                         selected_postings,
@@ -357,7 +361,9 @@ impl MmapInvertedIndex {
 
         match &self.storage.postings {
             MmapPostingsEnum::WithPositions(postings) => {
-                let Some(selected_postings) = postings.get_all_or_none(phrase.tokens()) else {
+                let unique_tokens = phrase.to_token_set();
+                let Some(selected_postings) = postings.get_all_or_none(unique_tokens.tokens())
+                else {
                     return false;
                 };
 
