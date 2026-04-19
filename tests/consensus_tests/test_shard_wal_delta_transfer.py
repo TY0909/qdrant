@@ -68,7 +68,7 @@ def test_empty_shard_wal_delta_transfer(tmp_path: pathlib.Path):
     assert_project_root()
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, _peer_dirs, _bootstrap_uri = start_cluster(tmp_path, 2, 20000)
+    peer_api_uris, _peer_dirs, _bootstrap_uri = start_cluster(tmp_path, 2)
 
     create_collection(peer_api_uris[0], shard_number=1, replication_factor=2)
     wait_collection_exists_and_active_on_all_peers(
@@ -156,7 +156,7 @@ def test_shard_wal_delta_transfer_manual_recovery(tmp_path: pathlib.Path):
     }
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, 20000, extra_env=env)
+    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, extra_env=env)
 
     create_collection(peer_api_uris[0], shard_number=1, replication_factor=3)
     wait_collection_exists_and_active_on_all_peers(
@@ -248,7 +248,7 @@ def test_shard_wal_delta_transfer_manual_recovery_chain(tmp_path: pathlib.Path):
     }
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 5, 20000, extra_env=env)
+    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 5, extra_env=env)
 
     create_collection(peer_api_uris[0], shard_number=1, replication_factor=5)
     wait_collection_exists_and_active_on_all_peers(
@@ -370,7 +370,7 @@ def test_shard_wal_delta_transfer_abort_and_retry(tmp_path: pathlib.Path):
     }
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, 20000, extra_env=env)
+    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, extra_env=env)
 
     create_collection(peer_api_uris[0], shard_number=1, replication_factor=3)
     wait_collection_exists_and_active_on_all_peers(
@@ -488,7 +488,7 @@ def test_shard_wal_delta_transfer_fallback(tmp_path: pathlib.Path):
     assert_project_root()
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, _peer_dirs, _bootstrap_uri = start_cluster(tmp_path, 3, 20000)
+    peer_api_uris, _peer_dirs, _bootstrap_uri = start_cluster(tmp_path, 3)
 
     create_collection(peer_api_uris[0], shard_number=3, replication_factor=1)
     wait_collection_exists_and_active_on_all_peers(
@@ -559,7 +559,7 @@ def test_shard_fallback_on_big_diff(tmp_path: pathlib.Path):
     }
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, 20000, extra_env=env)
+    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, extra_env=env)
 
     create_collection(peer_api_uris[0], shard_number=1, replication_factor=3)
     wait_collection_exists_and_active_on_all_peers(
@@ -659,7 +659,7 @@ def test_abort_stream_records_breaks_wal_delta(tmp_path: pathlib.Path):
     }
 
     # seed port to reuse the same port for the restarted nodes
-    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, 20000, extra_env=env)
+    peer_api_uris, peer_dirs, bootstrap_uri = start_cluster(tmp_path, 3, extra_env=env)
 
     create_collection(peer_api_uris[0], shard_number=1, replication_factor=3)
     wait_collection_exists_and_active_on_all_peers(
