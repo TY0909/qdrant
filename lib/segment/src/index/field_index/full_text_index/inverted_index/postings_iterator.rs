@@ -162,21 +162,15 @@ fn phrase_in_all_postings<'a>(
     PartialDocument::new(tokens_positions).has_phrase(phrase)
 }
 
-pub fn check_compressed_postings_phrase<'a>(
+pub fn check_compressed_postings_phrase(
     phrase: &Document,
     point_id: PointOffsetType,
-    token_to_posting: impl Fn(&TokenId) -> Option<PostingListView<'a, Positions>>,
+    token_to_posting: Vec<(TokenId, PostingListView<'_, Positions>)>,
 ) -> bool {
-    let Some(mut posting_iterators): Option<Vec<_>> = phrase
-        .to_token_set()
-        .tokens()
-        .iter()
-        .map(|token_id| token_to_posting(token_id).map(|posting| (*token_id, posting.into_iter())))
-        .collect()
-    else {
-        // not all tokens are present in the index
-        return false;
-    };
+    let mut posting_iterators = token_to_posting
+        .into_iter()
+        .map(|(token_id, posting)| (token_id, posting.into_iter()))
+        .collect::<Vec<_>>();
 
     phrase_in_all_postings(point_id, phrase, Vec::new(), &mut posting_iterators)
 }

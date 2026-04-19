@@ -21,6 +21,22 @@ use crate::index::field_index::full_text_index::inverted_index::postings_iterato
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
 
+/// Collect posting-list views for every token in `token_ids`.
+/// Returns `None` as soon as any token id is out of range.
+fn get_all_or_none<'a, V: PostingValue>(
+    postings: &'a [PostingList<V>],
+    token_ids: &[TokenId],
+) -> Option<Vec<(TokenId, PostingListView<'a, V>)>> {
+    token_ids
+        .iter()
+        .map(|&token_id| {
+            postings
+                .get(token_id as usize)
+                .map(|list| (token_id, list.view()))
+        })
+        .collect()
+}
+
 #[cfg_attr(test, derive(Clone))]
 #[derive(Debug)]
 pub struct ImmutableInvertedIndex {
@@ -188,17 +204,7 @@ impl ImmutableInvertedIndex {
 
         match &self.postings {
             ImmutablePostings::WithPositions(postings) => {
-                let selected_postings = phrase
-                    .tokens()
-                    .iter()
-                    .map(|&token_id| {
-                        postings
-                            .get(token_id as usize)
-                            .map(|list| (token_id, list.view()))
-                    })
-                    .collect::<Option<Vec<_>>>();
-
-                if let Some(selected_postings) = selected_postings {
+                if let Some(selected_postings) = get_all_or_none(postings, phrase.tokens()) {
                     Either::Right(intersect_compressed_postings_phrase_iterator(
                         phrase,
                         selected_postings,
@@ -226,9 +232,11 @@ impl ImmutableInvertedIndex {
 
         match &self.postings {
             ImmutablePostings::WithPositions(postings) => {
-                check_compressed_postings_phrase(phrase, point_id, |token_id| {
-                    postings.get(*token_id as usize).map(PostingList::view)
-                })
+                let Some(selected_postings) = get_all_or_none(postings, phrase.tokens()) else {
+                    return false;
+                };
+
+                check_compressed_postings_phrase(phrase, point_id, selected_postings)
             }
             // cannot do phrase matching if there's no positional information
             ImmutablePostings::Ids(_postings) => false,

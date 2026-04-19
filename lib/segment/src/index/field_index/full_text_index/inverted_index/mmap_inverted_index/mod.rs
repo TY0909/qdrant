@@ -356,9 +356,11 @@ impl MmapInvertedIndex {
 
         match &self.storage.postings {
             MmapPostingsEnum::WithPositions(postings) => {
-                check_compressed_postings_phrase(phrase, point_id, |token_id| {
-                    postings.get(*token_id)
-                })
+                let Some(selected_postings) = postings.get_all_or_none(phrase.tokens()) else {
+                    return false;
+                };
+
+                check_compressed_postings_phrase(phrase, point_id, selected_postings)
             }
             // cannot do phrase matching if there's no positional information
             MmapPostingsEnum::Ids(_postings) => false,
