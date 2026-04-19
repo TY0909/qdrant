@@ -188,11 +188,25 @@ impl ImmutableInvertedIndex {
 
         match &self.postings {
             ImmutablePostings::WithPositions(postings) => {
-                Either::Right(intersect_compressed_postings_phrase_iterator(
-                    phrase,
-                    |token_id| postings.get(*token_id as usize).map(PostingList::view),
-                    is_active,
-                ))
+                let selected_postings = phrase
+                    .tokens()
+                    .iter()
+                    .map(|&token_id| {
+                        postings
+                            .get(token_id as usize)
+                            .map(|list| (token_id, list.view()))
+                    })
+                    .collect::<Option<Vec<_>>>();
+
+                if let Some(selected_postings) = selected_postings {
+                    Either::Right(intersect_compressed_postings_phrase_iterator(
+                        phrase,
+                        selected_postings,
+                        is_active,
+                    ))
+                } else {
+                    Either::Left(std::iter::empty())
+                }
             }
             // cannot do phrase matching if there's no positional information
             ImmutablePostings::Ids(_postings) => Either::Left(std::iter::empty()),

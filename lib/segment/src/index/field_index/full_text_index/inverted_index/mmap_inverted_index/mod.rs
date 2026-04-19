@@ -28,7 +28,6 @@ use crate::index::field_index::full_text_index::inverted_index::postings_iterato
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
 
-pub mod as_posting_list_view;
 pub(super) mod mmap_postings;
 pub mod mmap_postings_enum;
 mod raw_posting_list;
@@ -203,11 +202,7 @@ impl MmapInvertedIndex {
             tokens: TokenSet,
             filter: impl Fn(u32) -> bool + 'a,
         ) -> Box<dyn Iterator<Item = PointOffsetType> + 'a> {
-            let postings_opt: Option<Vec<_>> = tokens
-                .tokens()
-                .iter()
-                .map(|&token_id| postings.get(token_id))
-                .collect();
+            let postings_opt = postings.get_all_or_none(tokens.tokens());
 
             let Some(posting_readers) = postings_opt else {
                 // There are unseen tokens -> no matches
@@ -218,6 +213,11 @@ impl MmapInvertedIndex {
                 // Empty request -> no matches
                 return Box::new(std::iter::empty());
             }
+
+            let posting_readers = posting_readers
+                .into_iter()
+                .map(|(_token_id, posting_list_view)| posting_list_view)
+                .collect();
 
             Box::new(intersect_compressed_postings_iterator(
                 posting_readers,
@@ -244,11 +244,7 @@ impl MmapInvertedIndex {
             tokens: TokenSet,
             is_active: impl Fn(PointOffsetType) -> bool + 'a,
         ) -> impl Iterator<Item = PointOffsetType> + 'a {
-            let postings: Vec<_> = tokens
-                .tokens()
-                .iter()
-                .filter_map(|&token_id| postings.get(token_id))
-                .collect();
+            let postings = postings.get_existing(tokens.tokens());
 
             // Query must not be empty
             if postings.is_empty() {
@@ -330,23 +326,25 @@ impl MmapInvertedIndex {
     }
 
     /// Iterate over point ids whose documents contain all given tokens in the same order they are provided
-    pub fn filter_has_phrase<'a>(
-        &'a self,
-        phrase: Document,
-    ) -> impl Iterator<Item = PointOffsetType> + 'a {
+    pub fn filter_has_phrase(&self, phrase: Document) -> Vec<PointOffsetType> {
         // in case of mmap immutable index, deleted points are still in the postings
         let is_active = move |idx| self.is_active(idx);
 
         match &self.storage.postings {
             MmapPostingsEnum::WithPositions(postings) => {
-                Either::Right(intersect_compressed_postings_phrase_iterator(
-                    phrase,
-                    |token_id| postings.get(*token_id),
-                    is_active,
-                ))
+                if let Some(selected_postings) = postings.get_all_or_none(phrase.tokens()) {
+                    intersect_compressed_postings_phrase_iterator(
+                        phrase,
+                        selected_postings,
+                        is_active,
+                    )
+                    .collect()
+                } else {
+                    Vec::new()
+                }
             }
             // cannot do phrase matching if there's no positional information
-            MmapPostingsEnum::Ids(_postings) => Either::Left(std::iter::empty()),
+            MmapPostingsEnum::Ids(_postings) => Vec::new(),
         }
     }
 
@@ -474,7 +472,7 @@ impl InvertedIndex for MmapInvertedIndex {
     ) -> OperationResult<Box<dyn Iterator<Item = PointOffsetType> + 'a>> {
         match query {
             ParsedQuery::AllTokens(tokens) => Ok(self.filter_has_all(tokens)),
-            ParsedQuery::Phrase(phrase) => Ok(Box::new(self.filter_has_phrase(phrase))),
+            ParsedQuery::Phrase(phrase) => Ok(Box::new(self.filter_has_phrase(phrase).into_iter())),
             ParsedQuery::AnyTokens(tokens) => Ok(Box::new(self.filter_has_any(tokens))),
         }
     }

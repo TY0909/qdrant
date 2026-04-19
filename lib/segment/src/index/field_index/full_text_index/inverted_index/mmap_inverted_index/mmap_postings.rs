@@ -1,8 +1,3 @@
-use std::io;
-use std::io::Write;
-use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
-
 use common::mmap::{Advice, AdviceSetting, Madviseable, open_read_mmap};
 use common::types::PointOffsetType;
 use common::zeros::WriteZerosExt;
@@ -12,6 +7,10 @@ use posting_list::{
     PostingChunk, PostingList, PostingListComponents, PostingListView, RemainderPosting,
     SizedTypeFor,
 };
+use std::io;
+use std::io::Write;
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 use zerocopy::{FromBytes, IntoBytes};
 
 use crate::index::field_index::full_text_index::inverted_index::TokenId;
@@ -151,6 +150,27 @@ impl<V: ZerocopyPostingValue> MmapPostings<V> {
     pub fn get<'a>(&'a self, token_id: TokenId) -> Option<PostingListView<'a, V>> {
         let header = self.get_header(token_id)?;
         self.get_view(header)
+    }
+
+    /// Retrieves all-or-nothing posting lists.
+    /// If at least one token is not present, returns `None`.
+    pub fn get_all_or_none(
+        &self,
+        token_ids: &[TokenId],
+    ) -> Option<Vec<(TokenId, PostingListView<'_, V>)>> {
+        token_ids
+            .iter()
+            .map(|&token_id| self.get(token_id).map(|view| (token_id, view)))
+            .collect()
+    }
+
+    /// Get vec of all existing posting lists for provided tokens.
+    /// If token doesn't exist it is ignored
+    pub fn get_existing(&self, token_ids: &[TokenId]) -> Vec<PostingListView<'_, V>> {
+        token_ids
+            .iter()
+            .filter_map(|&token_id| self.get(token_id))
+            .collect()
     }
 
     /// Given a vector of compressed posting lists, this function writes them to the `path` file.

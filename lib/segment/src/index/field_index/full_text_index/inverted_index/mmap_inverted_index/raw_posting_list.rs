@@ -1,10 +1,11 @@
-use std::borrow::Cow;
+use crate::common::operation_error::OperationResult;
+use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{
+    PostingListHeader, ZerocopyPostingValue,
+};
 use common::types::PointOffsetType;
 use posting_list::{PostingChunk, PostingListView, RemainderPosting, SizedTypeFor};
+use std::borrow::Cow;
 use zerocopy::FromBytes;
-use crate::common::operation_error::OperationResult;
-use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::as_posting_list_view::AsPostingListView;
-use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::types::{PostingListHeader, ZerocopyPostingValue};
 
 /// Raw byte representation of posting list, which can be converted into [`PostingListView`]
 pub struct RawPostingList<'a> {
@@ -18,8 +19,8 @@ impl<'a> RawPostingList<'a> {
     }
 }
 
-impl<'a, V: ZerocopyPostingValue> AsPostingListView<'a, V> for RawPostingList<'a> {
-    fn as_view(&'a self) -> OperationResult<PostingListView<'a, V>> {
+impl<'a> RawPostingList<'a> {
+    pub fn as_view<V: ZerocopyPostingValue>(&'a self) -> OperationResult<PostingListView<'a, V>> {
         let (last_doc_id, bytes) = PointOffsetType::read_from_prefix(self.bytes.as_ref())?;
 
         let (chunks, bytes) = <[PostingChunk<SizedTypeFor<V>>]>::ref_from_prefix_with_elems(

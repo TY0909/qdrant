@@ -162,6 +162,7 @@ impl From<UniversalIoError> for OperationError {
             | UniversalIoError::InvalidFileIndex { .. } => Self::service_error(err.to_string()),
             UniversalIoError::BytemuckCast(_) => Self::service_error(err.to_string()),
             UniversalIoError::Uninitialized { .. } => Self::service_error(err.to_string()),
+            UniversalIoError::ZerocopySize(_) => Self::service_error(err.to_string()),
         }
     }
 }
