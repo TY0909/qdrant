@@ -1113,6 +1113,7 @@ pub struct StrictModeConfig {
     /// Reject memory-consuming update operations when process resident memory exceeds this percentage of total RAM (cgroup-aware, 1-100).
     /// Delete-style operations are still allowed so memory can be freed.
     #[prost(uint32, optional, tag = "21")]
+    #[validate(range(min = 1, max = 100))]
     pub max_resident_memory_percent: ::core::option::Option<u32>,
 }
 #[derive(validator::Validate)]
