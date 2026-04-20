@@ -35,6 +35,7 @@ pub fn query_result_order(
             ScoringQuery::Sample(SampleInternal::Random) => None,
             // MMR cannot be reordered
             ScoringQuery::Mmr(_) => None,
+            ScoringQuery::Payload(_) => Some(Order::LargeBetter),
         },
         None => {
             // Order by ID

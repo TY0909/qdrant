@@ -253,6 +253,7 @@ impl FromPyObject<'_, '_> for PyScoringQuery {
                 ScoringQuery::Formula(_) => {}
                 ScoringQuery::Sample(_) => {}
                 ScoringQuery::Mmr(_) => {}
+                ScoringQuery::Payload(_) => {}
             }
         }
 
@@ -282,6 +283,7 @@ impl<'py> IntoPyObject<'py> for PyScoringQuery {
             ScoringQuery::Formula(formula) => PyFormula(formula).into_bound_py_any(py),
             ScoringQuery::Sample(sample) => PySample::from(sample).into_bound_py_any(py),
             ScoringQuery::Mmr(mmr) => PyMmr(mmr).into_bound_py_any(py),
+            ScoringQuery::Payload(payload) => todo!(),
         }
     }
 }
@@ -305,6 +307,7 @@ impl Repr for PyScoringQuery {
             ScoringQuery::Formula(_formula) => f.unimplemented(), // TODO!
             ScoringQuery::Sample(sample) => PySample::from(*sample).fmt(f),
             ScoringQuery::Mmr(mmr) => PyMmr::wrap_ref(mmr).fmt(f),
+            ScoringQuery::Payload(payload) => todo!(),
         }
     }
 }

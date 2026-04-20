@@ -21,6 +21,7 @@ use segment::types::*;
 use serde::Serialize;
 
 use self::query_enum::*;
+use crate::query::payload_query::PayloadQueryInternal;
 use crate::search::CoreSearchRequest;
 
 /// Internal response type for a universal query request.
@@ -135,6 +136,8 @@ pub enum ScoringQuery {
     ///   1. Performs search all the way down to segments.
     ///   2. MMR gets calculated once results reach collection level.
     Mmr(MmrInternal),
+
+    Payload(PayloadQueryInternal),
 }
 
 impl ScoringQuery {
@@ -151,7 +154,11 @@ impl ScoringQuery {
             },
             // MMR is a nearest neighbors search before computing diversity at collection level
             Self::Mmr(_) => false,
-            Self::Vector(_) | Self::OrderBy(_) | Self::Formula(_) | Self::Sample(_) => false,
+            Self::Vector(_)
+            | Self::OrderBy(_)
+            | Self::Formula(_)
+            | Self::Sample(_)
+            | Self::Payload(_) => false,
         }
     }
 

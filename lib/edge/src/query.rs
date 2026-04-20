@@ -271,6 +271,7 @@ impl EdgeShard {
             },
 
             ScoringQuery::Mmr(mmr) => self.mmr_rescore(sources, mmr, limit, hw_counter_acc),
+            ScoringQuery::Payload(payload_query) => todo!(),
         }
     }
 

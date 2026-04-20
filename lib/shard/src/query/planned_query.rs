@@ -137,7 +137,8 @@ impl PlannedQuery {
             | Some(ScoringQuery::Fusion(_))
             | Some(ScoringQuery::OrderBy(_))
             | Some(ScoringQuery::Formula(_))
-            | Some(ScoringQuery::Sample(_)) => with_vector,
+            | Some(ScoringQuery::Sample(_))
+            | Some(ScoringQuery::Payload(_)) => with_vector,
             Some(ScoringQuery::Mmr(mmr)) => with_vector.merge(&WithVector::from(mmr.using.clone())),
         };
 
@@ -187,6 +188,7 @@ impl PlannedQuery {
             Some(ScoringQuery::OrderBy(_)) => None,
             Some(ScoringQuery::Formula(_)) => None,
             Some(ScoringQuery::Sample(_)) => None,
+            Some(ScoringQuery::Payload(_)) => None,
             Some(ScoringQuery::Mmr(_)) => Some(RescoreStages::collection_level(RescoreParams {
                 rescore: query.clone().unwrap(),
                 limit,
@@ -269,7 +271,8 @@ impl PlannedQuery {
             rescore @ (ScoringQuery::Vector(_)
             | ScoringQuery::OrderBy(_)
             | ScoringQuery::Formula(_)
-            | ScoringQuery::Sample(_)) => Some(RescoreStages::shard_level(RescoreParams {
+            | ScoringQuery::Sample(_)
+            | ScoringQuery::Payload(_)) => Some(RescoreStages::shard_level(RescoreParams {
                 rescore,
                 limit,
                 score_threshold: score_threshold.map(OrderedFloat),
@@ -456,6 +459,7 @@ fn leaf_source_from_scoring_query(
 
             Source::SearchesIdx(idx)
         }
+        Some(ScoringQuery::Payload(payload_query)) => todo!(),
         None => {
             let scroll = QueryScrollRequestInternal {
                 scroll_order: Default::default(),

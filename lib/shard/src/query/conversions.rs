@@ -413,6 +413,7 @@ impl From<ScoringQuery> for grpc::query_shard_points::Query {
                     candidates_limit: candidates_limit as u32,
                 })),
             },
+            ScoringQuery::Payload(payload_query) => todo!(),
         }
     }
 }
