@@ -21,6 +21,7 @@ use segment::types::*;
 use serde::Serialize;
 
 use self::query_enum::*;
+use crate::query::payload_query::PayloadQueryInternal;
 use crate::search::CoreSearchRequest;
 
 /// Internal response type for a universal query request.
@@ -135,9 +136,32 @@ pub enum ScoringQuery {
     ///   1. Performs search all the way down to segments.
     ///   2. MMR gets calculated once results reach collection level.
     Mmr(MmrInternal),
+
+    Payload(PayloadQueryInternal),
 }
 
 impl ScoringQuery {
+    /// Whether the query needs the prefetches results from all shards to compute the final score
+    ///
+    /// If false, there is a single list of scored points which contain the final score.
+    pub fn needs_intermediate_results(&self) -> bool {
+        match self {
+            Self::Fusion(fusion) => match fusion {
+                // We need the ranking information of each prefetch
+                FusionInternal::Rrf { k: _, weights: _ } => true,
+                // We need the score distribution information of each prefetch
+                FusionInternal::Dbsf => true,
+            },
+            // MMR is a nearest neighbors search before computing diversity at collection level
+            Self::Mmr(_) => false,
+            Self::Vector(_)
+            | Self::OrderBy(_)
+            | Self::Formula(_)
+            | Self::Sample(_)
+            | Self::Payload(_) => false,
+        }
+    }
+
     /// Get the vector name if it is scored against a vector
     pub fn get_vector_name(&self) -> Option<&VectorName> {
         match self {

@@ -418,6 +418,7 @@ impl LocalShard {
                 )
                 .await
             }
+            ScoringQuery::Payload(payload_query) => todo!(),
         }
     }
 
