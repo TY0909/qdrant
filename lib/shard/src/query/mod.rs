@@ -2,6 +2,7 @@
 mod conversions;
 pub mod formula;
 pub mod mmr;
+pub mod payload_query;
 pub mod planned_query;
 pub mod query_enum;
 pub mod scroll;

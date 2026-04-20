@@ -15,6 +15,7 @@ use segment::vector_storage::query::{
     ContextPair, ContextQuery, DiscoverQuery, FeedbackItem, NaiveFeedbackCoefficients, RecoQuery,
 };
 use serde::Serialize;
+use shard::query::payload_query::PayloadQueryInternal;
 use shard::query::query_enum::QueryEnum;
 
 use super::formula::FormulaInternal;
@@ -102,6 +103,9 @@ pub enum Query {
 
     /// Sample points
     Sample(SampleInternal),
+
+    /// Payload query
+    Payload(PayloadQueryInternal),
 }
 
 impl Query {
@@ -126,6 +130,7 @@ impl Query {
             Query::OrderBy(order_by) => ScoringQuery::OrderBy(order_by),
             Query::Formula(formula) => ScoringQuery::Formula(ParsedFormula::try_from(formula)?),
             Query::Sample(sample) => ScoringQuery::Sample(sample),
+            Query::Payload(payload) => todo!(),
         };
 
         Ok(scoring_query)
@@ -138,7 +143,11 @@ impl Query {
                 .into_iter()
                 .copied()
                 .collect(),
-            Self::Fusion(_) | Self::OrderBy(_) | Self::Formula(_) | Self::Sample(_) => Vec::new(),
+            Self::Fusion(_)
+            | Self::OrderBy(_)
+            | Self::Formula(_)
+            | Self::Sample(_)
+            | Self::Payload(_) => Vec::new(),
         }
     }
 }

@@ -13,6 +13,7 @@ use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, MultiDenseVectorInternal
 use segment::vector_storage::query::{
     ContextPair, ContextQuery, DiscoverQuery, FeedbackItem, RecoQuery,
 };
+use shard::query::payload_query::{PayloadQueryInternal, TextQueryInternal};
 use storage::content_manager::errors::{StorageError, StorageResult};
 
 use crate::common::inference::batch_processing::{
@@ -299,6 +300,13 @@ fn convert_query_with_inferred(
                 strategy,
             })))
         }
+        rest::Query::Payload(payload_query) => match payload_query.payload {
+            rest::PayloadQueryInterface::Text(rest::TextQuery {
+                text: rest::TextQueryInput { key, query_str },
+            }) => Ok(Query::Payload(PayloadQueryInternal::Text(
+                TextQueryInternal { key, query_str },
+            ))),
+        },
     }
 }
 
