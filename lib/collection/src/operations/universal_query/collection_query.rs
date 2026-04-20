@@ -130,7 +130,7 @@ impl Query {
             Query::OrderBy(order_by) => ScoringQuery::OrderBy(order_by),
             Query::Formula(formula) => ScoringQuery::Formula(ParsedFormula::try_from(formula)?),
             Query::Sample(sample) => ScoringQuery::Sample(sample),
-            Query::Payload(payload) => todo!(),
+            Query::Payload(payload) => ScoringQuery::Payload(payload),
         };
 
         Ok(scoring_query)

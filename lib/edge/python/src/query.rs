@@ -15,6 +15,7 @@ use shard::query::*;
 
 use super::*;
 use crate::repr::*;
+use crate::types::payload_query::PyPayloadQuery;
 
 #[pyclass(name = "QueryRequest", from_py_object)]
 #[derive(Clone, Debug, Into)]
@@ -283,7 +284,7 @@ impl<'py> IntoPyObject<'py> for PyScoringQuery {
             ScoringQuery::Formula(formula) => PyFormula(formula).into_bound_py_any(py),
             ScoringQuery::Sample(sample) => PySample::from(sample).into_bound_py_any(py),
             ScoringQuery::Mmr(mmr) => PyMmr(mmr).into_bound_py_any(py),
-            ScoringQuery::Payload(payload) => todo!(),
+            ScoringQuery::Payload(payload) => PyPayloadQuery(payload).into_bound_py_any(py),
         }
     }
 }
@@ -307,7 +308,7 @@ impl Repr for PyScoringQuery {
             ScoringQuery::Formula(_formula) => f.unimplemented(), // TODO!
             ScoringQuery::Sample(sample) => PySample::from(*sample).fmt(f),
             ScoringQuery::Mmr(mmr) => PyMmr::wrap_ref(mmr).fmt(f),
-            ScoringQuery::Payload(payload) => todo!(),
+            ScoringQuery::Payload(payload) => PyPayloadQuery::wrap_ref(payload).fmt(f),
         }
     }
 }
