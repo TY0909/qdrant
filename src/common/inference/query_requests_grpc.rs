@@ -16,6 +16,7 @@ use segment::types::{Filter, PointIdType, SearchParams};
 use segment::vector_storage::query::{
     ContextPair, ContextQuery, DiscoverQuery, FeedbackItem, RecoQuery,
 };
+use shard::query::payload_query::{PayloadQueryInternal, TextQueryInternal};
 use tonic::Status;
 
 use crate::common::inference::batch_processing_grpc::{
@@ -349,6 +350,22 @@ fn convert_query_with_inferred(
                 feedback,
                 strategy,
             }))
+        }
+        Variant::Payload(payload_query) => {
+            let grpc::PayloadQuery { variant } = payload_query;
+            let variant =
+                variant.ok_or_else(|| Status::invalid_argument("payload query is missing"))?;
+            match variant {
+                grpc::payload_query::Variant::Text(grpc::TextQuery { key, query_str }) => {
+                    let key = key.parse().map_err(|_| {
+                        Status::invalid_argument(format!("invalid JSON path {key}"))
+                    })?;
+                    Query::Payload(PayloadQueryInternal::Text(TextQueryInternal {
+                        key,
+                        query_str,
+                    }))
+                }
+            }
         }
     };
 

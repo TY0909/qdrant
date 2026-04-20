@@ -40,7 +40,10 @@ use super::qdrant::{
     start_from,
 };
 use super::stemming_algorithm::StemmingParams;
-use super::{Expression, Formula, RecoQuery, SnowballParams, StemmingAlgorithm, Usage};
+use super::{
+    Expression, Formula, PayloadQuery, RecoQuery, SnowballParams, StemmingAlgorithm, TextQuery,
+    Usage,
+};
 use crate::conversions::json::{self, json_to_proto};
 use crate::grpc::qdrant::condition::ConditionOneOf;
 use crate::grpc::qdrant::r#match::MatchValue;
@@ -67,6 +70,66 @@ use crate::grpc::{
 };
 use crate::rest::models::{CollectionsResponse, ShardKeysResponse, VersionInfo};
 use crate::rest::schema as rest;
+
+impl From<rest::PayloadQuery> for PayloadQuery {
+    fn from(value: rest::PayloadQuery) -> Self {
+        use crate::grpc::qdrant::payload_query::Variant;
+
+        let variant = match value.payload {
+            rest::PayloadQueryInterface::Text(rest::TextQuery { text }) => {
+                Variant::Text(TextQuery::from(text))
+            }
+        };
+
+        Self {
+            variant: Some(variant),
+        }
+    }
+}
+
+impl From<rest::TextQueryInput> for TextQuery {
+    fn from(value: rest::TextQueryInput) -> Self {
+        let rest::TextQueryInput { key, query_str } = value;
+
+        Self {
+            key: key.to_string(),
+            query_str,
+        }
+    }
+}
+
+impl TryFrom<PayloadQuery> for rest::PayloadQuery {
+    type Error = Status;
+
+    fn try_from(value: PayloadQuery) -> Result<Self, Self::Error> {
+        use crate::grpc::qdrant::payload_query::Variant;
+
+        let variant = value
+            .variant
+            .ok_or_else(|| Status::invalid_argument("PayloadQuery.variant is missing"))?;
+
+        let payload = match variant {
+            Variant::Text(text) => rest::PayloadQueryInterface::Text(rest::TextQuery {
+                text: rest::TextQueryInput::try_from(text)?,
+            }),
+        };
+
+        Ok(Self { payload })
+    }
+}
+
+impl TryFrom<TextQuery> for rest::TextQueryInput {
+    type Error = Status;
+
+    fn try_from(value: TextQuery) -> Result<Self, Self::Error> {
+        let TextQuery { key, query_str } = value;
+        let key = key
+            .parse()
+            .map_err(|_| Status::invalid_argument(format!("invalid JSON path {key}")))?;
+
+        Ok(Self { key, query_str })
+    }
+}
 
 pub fn convert_shard_key_to_grpc(value: segment::types::ShardKey) -> ShardKey {
     match value {

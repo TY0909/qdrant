@@ -195,6 +195,7 @@ pub(crate) fn collect_query(query: &Query, batch: &mut BatchAccumGrpc) -> Result
                 .transpose()?;
         }
         query::Variant::RelevanceFeedback(feedback) => collect_feedback_input(feedback, batch)?,
+        query::Variant::Payload(_) => {}
     }
 
     Ok(())
