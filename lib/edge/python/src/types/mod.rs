@@ -3,6 +3,7 @@ pub mod formula;
 pub mod json_path;
 pub mod order_value;
 pub mod payload;
+pub mod payload_query;
 pub mod payload_schema;
 pub mod point;
 pub mod point_id;
