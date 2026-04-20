@@ -1064,7 +1064,20 @@ message Query {
     Rrf rrf = 10;
     // Search with feedback from some oracle.
     RelevanceFeedbackInput relevance_feedback = 11;
+    // Search by payload content.
+    PayloadQuery payload = 12;
   }
+}
+
+message PayloadQuery {
+  oneof variant {
+    TextQuery text = 1;
+  }
+}
+
+message TextQuery {
+  string key = 1;
+  string query_str = 2;
 }
 
 message PrefetchQuery {

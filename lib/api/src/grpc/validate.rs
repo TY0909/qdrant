@@ -374,7 +374,8 @@ impl Validate for super::qdrant::query::Variant {
             grpc::query::Variant::RelevanceFeedback(q) => q.validate(),
             grpc::query::Variant::Sample(_)
             | grpc::query::Variant::Fusion(_)
-            | grpc::query::Variant::OrderBy(_) => Ok(()),
+            | grpc::query::Variant::OrderBy(_)
+            | grpc::query::Variant::Payload(_) => Ok(()),
         }
     }
 }

@@ -6777,7 +6777,7 @@ pub struct Rrf {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Query {
-    #[prost(oneof = "query::Variant", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "query::Variant", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     #[validate(nested)]
     pub variant: ::core::option::Option<query::Variant>,
 }
@@ -6820,7 +6820,36 @@ pub mod query {
         /// Search with feedback from some oracle.
         #[prost(message, tag = "11")]
         RelevanceFeedback(super::RelevanceFeedbackInput),
+        /// Search by payload content.
+        #[prost(message, tag = "12")]
+        Payload(super::PayloadQuery),
     }
+}
+#[derive(serde::Serialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PayloadQuery {
+    #[prost(oneof = "payload_query::Variant", tags = "1")]
+    pub variant: ::core::option::Option<payload_query::Variant>,
+}
+/// Nested message and enum types in `PayloadQuery`.
+pub mod payload_query {
+    #[derive(serde::Serialize)]
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Variant {
+        #[prost(message, tag = "1")]
+        Text(super::TextQuery),
+    }
+}
+#[derive(serde::Serialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TextQuery {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub query_str: ::prost::alloc::string::String,
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
@@ -11251,6 +11280,32 @@ pub mod raw_vector {
         MultiDense(super::MultiDenseVector),
     }
 }
+#[derive(serde::Serialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawPayloadQuery {
+    #[prost(oneof = "raw_payload_query::Variant", tags = "1")]
+    pub variant: ::core::option::Option<raw_payload_query::Variant>,
+}
+/// Nested message and enum types in `RawPayloadQuery`.
+pub mod raw_payload_query {
+    #[derive(serde::Serialize)]
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Text {
+        #[prost(string, tag = "1")]
+        pub key: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub query_str: ::prost::alloc::string::String,
+    }
+    #[derive(serde::Serialize)]
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Variant {
+        #[prost(message, tag = "1")]
+        Text(Text),
+    }
+}
 /// Query variants for raw vectors (ids have been substituted with vectors)
 #[derive(serde::Serialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -11386,7 +11441,7 @@ pub mod query_shard_points {
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Query {
-        #[prost(oneof = "query::Score", tags = "1, 2, 3, 4, 5, 6, 7")]
+        #[prost(oneof = "query::Score", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
         pub score: ::core::option::Option<query::Score>,
     }
     /// Nested message and enum types in `Query`.
@@ -11416,6 +11471,9 @@ pub mod query_shard_points {
             /// Parameterized RRF fusion
             #[prost(message, tag = "7")]
             Rrf(super::super::Rrf),
+            /// Score by payload query
+            #[prost(message, tag = "8")]
+            Payload(super::super::RawPayloadQuery),
         }
     }
     #[derive(serde::Serialize)]

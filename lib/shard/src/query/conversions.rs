@@ -16,6 +16,7 @@ use segment::vector_storage::query::{
 };
 
 use crate::query::formula::*;
+use crate::query::payload_query::{PayloadQueryInternal, TextQueryInternal};
 use crate::query::query_enum::*;
 use crate::query::{
     FusionInternal, MmrInternal, SampleInternal, ScoringQuery, ShardPrefetch, ShardQueryRequest,
@@ -377,6 +378,9 @@ impl ScoringQuery {
                     candidates_limit: candidates_limit as usize,
                 })
             }
+            grpc::query_shard_points::query::Score::Payload(payload) => {
+                ScoringQuery::Payload(PayloadQueryInternal::try_from(payload)?)
+            }
         };
 
         Ok(scoring_query)
@@ -413,7 +417,9 @@ impl From<ScoringQuery> for grpc::query_shard_points::Query {
                     candidates_limit: candidates_limit as u32,
                 })),
             },
-            ScoringQuery::Payload(payload_query) => todo!(),
+            ScoringQuery::Payload(payload_query) => Self {
+                score: Some(Score::Payload(grpc::RawPayloadQuery::from(payload_query))),
+            },
         }
     }
 }
@@ -588,6 +594,51 @@ impl From<QueryEnum> for grpc::RawQuery {
 
         grpc::RawQuery {
             variant: Some(variant),
+        }
+    }
+}
+
+impl From<PayloadQueryInternal> for grpc::RawPayloadQuery {
+    fn from(value: PayloadQueryInternal) -> Self {
+        use grpc::raw_payload_query::Variant;
+
+        let variant = match value {
+            PayloadQueryInternal::Text(TextQueryInternal { key, query_str }) => {
+                Variant::Text(grpc::raw_payload_query::Text {
+                    key: key.to_string(),
+                    query_str,
+                })
+            }
+        };
+
+        Self {
+            variant: Some(variant),
+        }
+    }
+}
+
+impl TryFrom<grpc::RawPayloadQuery> for PayloadQueryInternal {
+    type Error = tonic::Status;
+
+    fn try_from(value: grpc::RawPayloadQuery) -> Result<Self, Self::Error> {
+        use grpc::raw_payload_query::Variant;
+
+        let variant = value
+            .variant
+            .ok_or_else(|| tonic::Status::invalid_argument("missing field: variant"))?;
+
+        match variant {
+            Variant::Text(text) => {
+                let grpc::raw_payload_query::Text { key, query_str } = text;
+                let key = key.parse().map_err(|_| {
+                    tonic::Status::invalid_argument(format!("invalid JSON path {key}"))
+                })?;
+
+                Ok(PayloadQueryInternal::Text(TextQueryInternal {
+                    key,
+                    query_str,
+                }))
+            }
         }
     }
 }

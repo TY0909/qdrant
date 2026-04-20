@@ -327,6 +327,17 @@ message RawVector {
   }
 }
 
+message RawPayloadQuery {
+  message Text {
+    string key = 1;
+    string query_str = 2;
+  }
+
+  oneof variant {
+    Text text = 1;
+  }
+}
+
 // Query variants for raw vectors (ids have been substituted with vectors)
 message RawQuery {
   message Recommend {
@@ -402,6 +413,8 @@ message QueryShardPoints {
       MmrInternal mmr = 6;
       // Parameterized RRF fusion
       Rrf rrf = 7;
+      // Score by payload query
+      RawPayloadQuery payload = 8;
     }
   }
 
