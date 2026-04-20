@@ -122,10 +122,8 @@ def get_qdrant_exec() -> str:
     return str(qdrant_exec)
 
 def get_llvm_profile_file() -> str:
-    # %m: keep merging results from each test into the same file
-    # If you have multiple tests running in parallel, you can use -%p OR -%{thread_count}m to have different files
-    # Not using -%p since each test will generate a new file
-    llvm_profile_file = PROJECT_ROOT / "target" / "llvm-cov-target" / "qdrant-consensus-tests-%m.profraw"
+    # %p (per-PID) avoids %m's partial-merge corruption when peers are SIGKILLed under -n auto.
+    llvm_profile_file = PROJECT_ROOT / "target" / "llvm-cov-target" / "qdrant-consensus-tests-%p.profraw"
     return str(llvm_profile_file)
 
 
