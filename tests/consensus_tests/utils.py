@@ -1,8 +1,10 @@
+import ctypes
 import json
 import os
 import re
 import shutil
 import signal
+import sys
 from subprocess import Popen
 import time
 from typing import Tuple, Callable, Dict, List, Optional
@@ -17,6 +19,14 @@ from .assertions import assert_http_ok
 WAIT_TIME_SEC = 30
 RETRY_INTERVAL_SEC = 0.2
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
+# Kernel SIGKILLs the child if the xdist worker dies abnormally, preventing orphaned peers.
+def _set_pdeathsig_sigkill():
+    if sys.platform != "linux":
+        return
+    PR_SET_PDEATHSIG = 1
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
 
 # Tracks processes that need to be killed at the end of the test
 processes: List['PeerProcess'] = []
@@ -175,7 +185,7 @@ def start_peer(peer_dir: Path, log_file: str, bootstrap_uri: str, port=None, ext
     # Wrap with systemd-run to throttle CPU to investigate issues
     # wrapped_cmd = ["systemd-run", "--user", "--scope", "-p", "CPUQuota=20%", "--"] + args
     # proc = Popen(wrapped_cmd, env=env, cwd=peer_dir, stdout=log_file)
-    proc = Popen(args, env=env, cwd=peer_dir, stdout=log_file)
+    proc = Popen(args, env=env, cwd=peer_dir, stdout=log_file, preexec_fn=_set_pdeathsig_sigkill)
     processes.append(PeerProcess(proc, http_port, grpc_port, p2p_port))
     return get_uri(http_port)
 
@@ -215,7 +225,7 @@ def start_first_peer(peer_dir: Path, log_file: str, port=None, extra_env=None, r
     # Wrap with systemd-run to throttle CPU to investigate issues
     # wrapped_cmd = ["systemd-run", "--user", "--scope", "-p", "CPUQuota=20%", "--"] + args
     # proc = Popen(wrapped_cmd, env=env, cwd=peer_dir, stdout=log_file)
-    proc = Popen(args, env=env, cwd=peer_dir, stdout=log_file)
+    proc = Popen(args, env=env, cwd=peer_dir, stdout=log_file, preexec_fn=_set_pdeathsig_sigkill)
     processes.append(PeerProcess(proc, http_port, grpc_port, p2p_port))
     return get_uri(http_port), bootstrap_uri
 
