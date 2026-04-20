@@ -26,7 +26,7 @@ def _set_pdeathsig_sigkill():
     if sys.platform != "linux":
         return
     PR_SET_PDEATHSIG = 1
-    ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    ctypes.CDLL("libc.so.6").prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
 
 # Tracks processes that need to be killed at the end of the test
 processes: List['PeerProcess'] = []
