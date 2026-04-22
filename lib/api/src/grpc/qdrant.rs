@@ -1507,6 +1507,11 @@ pub struct TextIndexParams {
     /// Default: true.
     #[prost(bool, optional, tag = "10")]
     pub enable_hnsw: ::core::option::Option<bool>,
+    /// Enable payload scoring for this payload field.
+    /// If true, will store weight info of token when building the index.
+    /// Default: false
+    #[prost(bool, optional, tag = "11")]
+    pub enable_score: ::core::option::Option<bool>,
 }
 #[derive(serde::Serialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]

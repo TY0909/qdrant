@@ -19,7 +19,7 @@ pub struct PyTextIndexParams(pub TextIndexParams);
 impl PyTextIndexParams {
     #[expect(clippy::too_many_arguments)]
     #[new]
-    #[pyo3(signature = (tokenizer = None, min_token_len = None, max_token_len = None, lowercase = None, ascii_folding = None, phrase_matching = None, stopwords = None, on_disk = None, stemmer = None, enable_hnsw = None))]
+    #[pyo3(signature = (tokenizer = None, min_token_len = None, max_token_len = None, lowercase = None, ascii_folding = None, phrase_matching = None, stopwords = None, on_disk = None, stemmer = None, enable_hnsw = None, enable_score = None))]
     pub fn new(
         tokenizer: Option<PyTokenizerType>,
         min_token_len: Option<usize>,
@@ -31,6 +31,7 @@ impl PyTextIndexParams {
         on_disk: Option<bool>,
         stemmer: Option<PyStemmingAlgorithm>,
         enable_hnsw: Option<bool>,
+        enable_score: Option<bool>,
     ) -> Self {
         Self(TextIndexParams {
             r#type: Default::default(),
@@ -44,6 +45,7 @@ impl PyTextIndexParams {
             on_disk,
             stemmer: stemmer.map(StemmingAlgorithm::from),
             enable_hnsw,
+            enable_score,
         })
     }
 
@@ -96,6 +98,11 @@ impl PyTextIndexParams {
     pub fn enable_hnsw(&self) -> Option<bool> {
         self.0.enable_hnsw
     }
+
+    #[getter]
+    pub fn enable_score(&self) -> Option<bool> {
+        self.0.enable_score
+    }
 }
 
 impl PyTextIndexParams {
@@ -113,6 +120,7 @@ impl PyTextIndexParams {
             on_disk: _,
             stemmer: _,
             enable_hnsw: _,
+            enable_score: _,
         } = self.0;
     }
 }

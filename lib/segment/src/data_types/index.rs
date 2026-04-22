@@ -255,6 +255,12 @@ pub struct TextIndexParams {
     /// Default: true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_hnsw: Option<bool>,
+
+    /// Enable payload scoring for this payload field.
+    /// If true, will store weight info of token when building the index.
+    /// Default: false
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_score: Option<bool>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, JsonSchema, Clone, Copy, PartialEq, Hash, Eq)]

@@ -173,6 +173,7 @@ impl Tokenizer {
             stopwords,
             stemmer,
             enable_hnsw: _,
+            enable_score: _,
         } = params;
 
         let lowercase = lowercase.unwrap_or(true);
@@ -415,6 +416,7 @@ mod tests {
             stopwords: None,
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -448,6 +450,7 @@ mod tests {
             stopwords: Some(StopwordsInterface::Language(Language::English)),
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -492,6 +495,7 @@ mod tests {
                 stopwords: Some(StopwordsInterface::Language(Language::English)),
                 stemmer: None,
                 enable_hnsw: None,
+                enable_score: None,
             };
 
             let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -529,6 +533,7 @@ mod tests {
             )),
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -566,6 +571,7 @@ mod tests {
             stopwords: Some(StopwordsInterface::new_custom(&["as", "the", "a"])),
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -606,6 +612,7 @@ mod tests {
             stopwords: Some(StopwordsInterface::Language(Language::English)),
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -646,6 +653,7 @@ mod tests {
             )),
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -689,6 +697,7 @@ mod tests {
             stopwords: Some(StopwordsInterface::new_custom(&["the", "The", "LAZY"])),
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let tokenizer = Tokenizer::new_from_text_index_params(&params);
@@ -738,6 +747,7 @@ mod tests {
             stopwords: None,
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
         let tokenizer_disabled = Tokenizer::new_from_text_index_params(&params_disabled);
         let mut tokens_disabled = Vec::new();
@@ -757,6 +767,7 @@ mod tests {
             stopwords: None,
             stemmer: None,
             enable_hnsw: None,
+            enable_score: None,
         };
         let tokenizer_enabled = Tokenizer::new_from_text_index_params(&params_enabled);
         let mut tokens_enabled = Vec::new();

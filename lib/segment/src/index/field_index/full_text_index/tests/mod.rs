@@ -166,6 +166,7 @@ fn test_prefix_search() {
         stemmer: None,
         ascii_folding: None,
         enable_hnsw: None,
+        enable_score: None,
     };
 
     let mut index =
@@ -217,6 +218,7 @@ fn test_phrase_matching() {
         stemmer: None,
         ascii_folding: None,
         enable_hnsw: None,
+        enable_score: None,
     };
 
     let mut mutable_index =
@@ -339,6 +341,7 @@ fn test_ascii_folding_in_full_text_index_word() {
         stemmer: None,
         ascii_folding: Some(true),
         enable_hnsw: None,
+        enable_score: None,
     };
     let config_disabled = TextIndexParams {
         ascii_folding: Some(false),

@@ -694,6 +694,10 @@ message TextIndexParams {
   // If true, builds additional HNSW links (Need payload_m > 0).
   // Default: true.
   optional bool enable_hnsw = 10;
+  // Enable payload scoring for this payload field.
+  // If true, will store weight info of token when building the index.
+  // Default: false
+  optional bool enable_score = 11;
 }
 
 message StemmingAlgorithm {
