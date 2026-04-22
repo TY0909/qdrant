@@ -279,6 +279,7 @@ impl From<segment::data_types::index::TextIndexParams> for PayloadIndexParams {
             stopwords,
             stemmer,
             enable_hnsw,
+            enable_score,
         } = params;
         let tokenizer = TokenizerType::from(tokenizer);
 
@@ -299,6 +300,7 @@ impl From<segment::data_types::index::TextIndexParams> for PayloadIndexParams {
                 stopwords: stopwords_set,
                 stemmer: stemming_algo,
                 enable_hnsw,
+                enable_score,
             })),
         }
     }
@@ -591,6 +593,7 @@ impl TryFrom<TextIndexParams> for segment::data_types::index::TextIndexParams {
             stopwords,
             stemmer,
             enable_hnsw,
+            enable_score,
         } = params;
 
         // Convert stopwords if present
@@ -621,6 +624,7 @@ impl TryFrom<TextIndexParams> for segment::data_types::index::TextIndexParams {
             stopwords: stopwords_converted,
             stemmer,
             enable_hnsw,
+            enable_score,
         })
     }
 }
