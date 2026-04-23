@@ -22,6 +22,9 @@ use crate::types::{FieldCondition, Match, PayloadKeyType};
 
 pub type TokenId = u32;
 
+pub(super) type TokenWeight = f32;
+pub(super) const DEFAULT_MAX_NEXT_WEIGHT: TokenWeight = f32::NEG_INFINITY;
+
 /// Contains the set of tokens that are in a document.
 ///
 /// Internally, it keeps them unique and sorted, so that we can binary-search over them

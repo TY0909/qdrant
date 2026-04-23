@@ -149,7 +149,7 @@ impl InvertedIndex for MutableInvertedIndex {
             self.postings
                 .get_mut(token_idx_usize)
                 .expect("posting must exist")
-                .insert(point_id);
+                .insert(point_id, None);
         }
         self.point_to_tokens[point_id as usize] = Some(tokens);
 
