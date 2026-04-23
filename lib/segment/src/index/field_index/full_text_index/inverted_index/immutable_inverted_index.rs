@@ -266,6 +266,17 @@ impl InvertedIndex for ImmutableInvertedIndex {
         ))
     }
 
+    fn index_token_weight_map(
+        &mut self,
+        _idx: PointOffsetType,
+        _token_weight_map: super::TokenWeightMap,
+        _hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<()> {
+        Err(OperationError::service_error(
+            "Can't add values to immutable text index",
+        ))
+    }
+
     fn index_document(
         &mut self,
         _idx: PointOffsetType,
@@ -357,6 +368,7 @@ impl From<MutableInvertedIndex> for ImmutableInvertedIndex {
             postings,
             vocab,
             point_to_tokens,
+            has_weight: _,
             point_to_doc,
             points_count,
         } = index;

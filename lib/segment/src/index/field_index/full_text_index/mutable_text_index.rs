@@ -16,6 +16,7 @@ use crate::common::Flusher;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::index::TextIndexParams;
 use crate::index::field_index::ValueIndexer;
+use crate::index::field_index::full_text_index::inverted_index::TokenWeightMap;
 use crate::index::payload_config::StorageType;
 
 const GRIDSTORE_OPTIONS: StorageOptions = StorageOptions {
@@ -65,12 +66,13 @@ impl MutableFullTextIndex {
         };
 
         let phrase_matching = config.phrase_matching.unwrap_or_default();
+        let enable_score = config.enable_score.unwrap_or(false);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
 
         let hw_counter = HardwareCounterCell::disposable();
         let hw_counter_ref = hw_counter.ref_payload_index_io_write_counter();
 
-        let mut builder = MutableInvertedIndexBuilder::new(phrase_matching);
+        let mut builder = MutableInvertedIndexBuilder::new(phrase_matching, enable_score);
 
         store
             .iter::<_, OperationError>(
@@ -175,11 +177,20 @@ impl MutableFullTextIndex {
                 .index_document(idx, document, hw_counter)?;
         }
 
-        let token_set = TokenSet::from_iter(tokens);
-        self.inverted_index
-            .index_tokens(idx, token_set, hw_counter)?;
+        let enable_score = self.config.enable_score.unwrap_or(false);
+        if enable_score {
+            let token_weight_map = TokenWeightMap::from_tokens(&tokens);
+            self.inverted_index
+                .index_token_weight_map(idx, token_weight_map, hw_counter)?;
+        } else {
+            let token_set = TokenSet::from_iter(tokens);
+            self.inverted_index
+                .index_tokens(idx, token_set, hw_counter)?;
+        }
 
-        let tokens_to_store = if phrase_matching {
+        // If enable_score is true, we also need to store the ordered tokens
+        // Because we need to calculate the weight info when we open it again
+        let tokens_to_store = if phrase_matching || enable_score {
             // store ordered tokens
             str_tokens
         } else {

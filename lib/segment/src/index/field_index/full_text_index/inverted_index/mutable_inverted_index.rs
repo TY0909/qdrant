@@ -8,6 +8,7 @@ use super::posting_list::PostingList;
 use super::postings_iterator::{intersect_postings_iterator, merge_postings_iterator};
 use super::{Document, InvertedIndex, ParsedQuery, TokenId, TokenSet};
 use crate::common::operation_error::OperationResult;
+use crate::index::field_index::full_text_index::inverted_index::TokenWeightMap;
 
 #[cfg_attr(test, derive(Clone))]
 pub struct MutableInvertedIndex {
@@ -15,6 +16,9 @@ pub struct MutableInvertedIndex {
     pub vocab: HashMap<String, TokenId>,
     pub(super) point_to_tokens: Vec<Option<TokenSet>>,
 
+    /// This option decide if the current inverted index store weight info
+    /// If true, the posting will store the weight info
+    pub(super) has_weight: bool,
     /// Optional additional structure to store positional information of tokens in the documents.
     ///
     /// Must be enabled explicitly.
@@ -24,11 +28,12 @@ pub struct MutableInvertedIndex {
 
 impl MutableInvertedIndex {
     /// Create a new inverted index with or without positional information.
-    pub fn new(with_positions: bool) -> Self {
+    pub fn new(with_positions: bool, with_weight: bool) -> Self {
         Self {
             postings: Vec::new(),
             vocab: HashMap::new(),
             point_to_tokens: Vec::new(),
+            has_weight: with_weight,
             point_to_doc: with_positions.then_some(Vec::new()),
             points_count: 0,
         }
@@ -153,6 +158,50 @@ impl InvertedIndex for MutableInvertedIndex {
         }
         self.point_to_tokens[point_id as usize] = Some(tokens);
 
+        Ok(())
+    }
+
+    fn index_token_weight_map(
+        &mut self,
+        point_id: PointOffsetType,
+        token_weight_map: TokenWeightMap,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<()> {
+        self.points_count += 1;
+
+        let mut hw_cell_wb = hw_counter
+            .payload_index_io_write_counter()
+            .write_back_counter();
+
+        if self.point_to_tokens.len() <= point_id as usize {
+            let new_len = point_id as usize + 1;
+
+            // Only measure the overhead of `TokenSet` here since we account for the tokens a few lines below.
+            hw_cell_wb
+                .incr_delta((new_len - self.point_to_tokens.len()) * size_of::<Option<TokenSet>>());
+
+            self.point_to_tokens.resize_with(new_len, Default::default);
+        }
+
+        for (token_id, token_weight) in token_weight_map.token_weight_iter() {
+            let token_idx_usize = *token_id as usize;
+
+            if self.postings.len() <= token_idx_usize {
+                let new_len = token_idx_usize + 1;
+                hw_cell_wb.incr_delta((new_len - self.postings.len()) * size_of::<PostingList>());
+                self.postings
+                    .resize_with(new_len, || PostingList::WithWeight {
+                        list: Default::default(),
+                    });
+            }
+
+            hw_cell_wb.incr_delta(size_of_val(&point_id));
+            self.postings
+                .get_mut(token_idx_usize)
+                .expect("posting must exist")
+                .insert(point_id, Some(*token_weight));
+        }
+        self.point_to_tokens[point_id as usize] = Some(token_weight_map.tokens_set());
         Ok(())
     }
 
@@ -298,6 +347,7 @@ impl MutableInvertedIndex {
         let Self {
             postings,
             vocab,
+            has_weight: _,
             point_to_tokens,
             point_to_doc,
             points_count: _,

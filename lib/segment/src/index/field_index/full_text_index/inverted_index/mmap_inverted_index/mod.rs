@@ -459,6 +459,17 @@ impl InvertedIndex for MmapInvertedIndex {
         ))
     }
 
+    fn index_token_weight_map(
+        &mut self,
+        _idx: PointOffsetType,
+        _token_weight_map: super::TokenWeightMap,
+        _hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<()> {
+        Err(OperationError::service_error(
+            "Can't add values to mmap immutable text index",
+        ))
+    }
+
     fn index_document(
         &mut self,
         _idx: PointOffsetType,

@@ -101,10 +101,11 @@ pub struct FullTextMmapIndexBuilder {
 impl FullTextMmapIndexBuilder {
     pub fn new(path: PathBuf, config: TextIndexParams, is_on_disk: bool) -> Self {
         let with_positions = config.phrase_matching.unwrap_or_default();
+        let with_weight = config.enable_score.unwrap_or(false);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
         Self {
             path,
-            mutable_index: MutableInvertedIndex::new(with_positions),
+            mutable_index: MutableInvertedIndex::new(with_positions, with_weight),
             config,
             is_on_disk,
             tokenizer,
