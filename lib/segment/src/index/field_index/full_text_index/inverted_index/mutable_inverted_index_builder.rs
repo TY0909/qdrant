@@ -2,16 +2,25 @@ use common::types::PointOffsetType;
 
 use super::InvertedIndex;
 use super::mutable_inverted_index::MutableInvertedIndex;
-use crate::index::field_index::full_text_index::inverted_index::{Document, TokenSet};
+use crate::index::field_index::full_text_index::inverted_index::posting_list::PostingList;
+use crate::index::field_index::full_text_index::inverted_index::{
+    Document, TokenSet, TokenWeightMap,
+};
 
 pub struct MutableInvertedIndexBuilder {
     index: MutableInvertedIndex,
+    keep_document: bool,
 }
 
 impl MutableInvertedIndexBuilder {
-    pub fn new(phrase_matching: bool) -> Self {
-        let index = MutableInvertedIndex::new(phrase_matching);
-        Self { index }
+    pub fn new(phrase_matching: bool, enable_score: bool) -> Self {
+        // Temporarily save doc info if enable_score is true.
+        // If phrase_matching is false, we will release the doc info after the build process over
+        let index = MutableInvertedIndex::new(phrase_matching, enable_score);
+        Self {
+            index,
+            keep_document: phrase_matching,
+        }
     }
 
     /// Add a vector to the inverted index builder
@@ -43,21 +52,51 @@ impl MutableInvertedIndexBuilder {
 
     /// Consumes the builder and returns a MutableInvertedIndex
     pub fn build(mut self) -> MutableInvertedIndex {
-        // build postings from point_to_tokens
-        // build in order to increase point id
-        for (idx, tokenset) in self.index.point_to_tokens.iter().enumerate() {
-            if let Some(tokenset) = tokenset {
-                for token_idx in tokenset.tokens() {
-                    if self.index.postings.len() <= *token_idx as usize {
+        // If enable_score is true, we will use point_to_doc instead of point_to_tokens
+        // Because we need to calculate the weight info
+        if self.index.has_weight
+            && let Some(point_to_doc) = self.index.point_to_doc.as_ref()
+        {
+            for (idx, tokens) in point_to_doc.iter().enumerate() {
+                if let Some(tokens) = tokens {
+                    let token_weight_map = TokenWeightMap::from_tokens(tokens.tokens());
+                    for (token_idx, token_weight) in token_weight_map.token_weight_iter() {
+                        if self.index.postings.len() <= *token_idx as usize {
+                            self.index
+                                .postings
+                                .resize_with(*token_idx as usize + 1, || PostingList::WithWeight {
+                                    list: Default::default(),
+                                });
+                        }
                         self.index
                             .postings
-                            .resize_with(*token_idx as usize + 1, Default::default);
+                            .get_mut(*token_idx as usize)
+                            .expect("posting must exist")
+                            .insert(idx as PointOffsetType, Some(*token_weight));
                     }
-                    self.index
-                        .postings
-                        .get_mut(*token_idx as usize)
-                        .expect("posting must exist")
-                        .insert(idx as PointOffsetType, None);
+                }
+            }
+            // If phrase_matching is false, we will not preserve the doc info
+            if !self.keep_document {
+                self.index.point_to_doc = None;
+            }
+        } else {
+            // build postings from point_to_tokens
+            // build in order to increase point id
+            for (idx, tokenset) in self.index.point_to_tokens.iter().enumerate() {
+                if let Some(tokenset) = tokenset {
+                    for token_idx in tokenset.tokens() {
+                        if self.index.postings.len() <= *token_idx as usize {
+                            self.index
+                                .postings
+                                .resize_with(*token_idx as usize + 1, Default::default);
+                        }
+                        self.index
+                            .postings
+                            .get_mut(*token_idx as usize)
+                            .expect("posting must exist")
+                            .insert(idx as PointOffsetType, None);
+                    }
                 }
             }
         }

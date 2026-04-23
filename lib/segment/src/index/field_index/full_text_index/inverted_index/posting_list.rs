@@ -25,16 +25,22 @@ impl PostingElementEx {
             max_next_weight: DEFAULT_MAX_NEXT_WEIGHT,
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct PostingElementExList(Vec<PostingElementEx>);
+    pub(super) fn point_id(&self) -> u32 {
+        self.point_id
+    }
 
-impl Default for PostingElementExList {
-    fn default() -> Self {
-        Self(Default::default())
+    pub(super) fn weight(&self) -> f32 {
+        self.weight
+    }
+
+    pub(super) fn max_next_weight(&self) -> f32 {
+        self.max_next_weight
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct PostingElementExList(Vec<PostingElementEx>);
 
 impl PostingElementExList {
     fn insert(&mut self, idx: PointOffsetType, weight: TokenWeight) {
@@ -108,6 +114,10 @@ impl PostingElementExList {
 
     fn iter_point_id(&self) -> impl Iterator<Item = PointOffsetType> + '_ {
         self.0.iter().map(|e| e.point_id)
+    }
+
+    fn iter_element(&self) -> impl Iterator<Item = &PostingElementEx> + '_ {
+        self.0.iter()
     }
 
     fn serialized_size(&self) -> usize {
@@ -203,6 +213,14 @@ impl PostingList {
         match self {
             PostingList::Ids { list } => Box::new(list.iter()),
             PostingList::WithWeight { list } => Box::new(list.iter_point_id()),
+        }
+    }
+
+    #[inline]
+    pub(super) fn iter_element(&self) -> Box<dyn Iterator<Item = &PostingElementEx> + '_> {
+        match self {
+            PostingList::Ids { list: _ } => Box::new(std::iter::empty()),
+            PostingList::WithWeight { list } => Box::new(list.iter_element()),
         }
     }
 
