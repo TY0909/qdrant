@@ -8,7 +8,7 @@ mod posting_list;
 mod postings_iterator;
 
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ahash::AHashSet;
 use common::counter::hardware_counter::HardwareCounterCell;
@@ -24,6 +24,50 @@ pub type TokenId = u32;
 
 pub(super) type TokenWeight = f32;
 pub(super) const DEFAULT_MAX_NEXT_WEIGHT: TokenWeight = f32::NEG_INFINITY;
+
+pub(super) const K: f64 = 1.2;
+pub(super) const B: f64 = 0.75;
+pub(super) const AVG_LEN: f64 = 256.0;
+
+/// Contains the set of tokens and its weight that are in a document
+///
+/// Internally, it's a `BTreeMap`. So its key keep sorted and unique
+#[derive(Default, Debug, Clone)]
+pub(super) struct TokenWeightMap(BTreeMap<TokenId, TokenWeight>);
+
+impl TokenWeightMap {
+    fn token_weight_iter(&self) -> impl Iterator<Item = (&TokenId, &TokenWeight)> {
+        self.0.iter()
+    }
+
+    fn tokens_set(&self) -> TokenSet {
+        self.0.iter().map(|e| *e.0).collect::<TokenSet>()
+    }
+
+    pub(super) fn from_tokens(token_ids: &[TokenId]) -> Self {
+        let mut tf_map = BTreeMap::new();
+        let doc_len = token_ids.len() as f64;
+
+        let mut counter = HashMap::new();
+
+        token_ids
+            .iter()
+            .for_each(|token_id| *counter.entry(*token_id).or_insert(0) += 1);
+
+        let k = K;
+        let b = B;
+        let avg_len = AVG_LEN;
+
+        for (token, count) in &counter {
+            let num_occurrences = f64::from(*count);
+            let mut tf = num_occurrences * (k + 1.0);
+            tf /= k.mul_add(1.0 - b + b * doc_len / avg_len, num_occurrences);
+            tf_map.insert(*token, tf as f32);
+        }
+
+        Self(tf_map)
+    }
+}
 
 /// Contains the set of tokens that are in a document.
 ///
@@ -215,6 +259,13 @@ pub trait InvertedIndex {
         &mut self,
         idx: PointOffsetType,
         tokens: TokenSet,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<()>;
+
+    fn index_token_weight_map(
+        &mut self,
+        idx: PointOffsetType,
+        token_weight_map: TokenWeightMap,
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<()>;
 
@@ -468,8 +519,9 @@ mod tests {
         indexed_count: u32,
         deleted_count: u32,
         with_positions: bool,
+        with_weight: bool,
     ) -> MutableInvertedIndex {
-        let mut index = MutableInvertedIndex::new(with_positions);
+        let mut index = MutableInvertedIndex::new(with_positions, with_weight);
 
         let hw_counter = HardwareCounterCell::new();
 
@@ -498,8 +550,11 @@ mod tests {
     }
 
     #[rstest]
-    fn test_mutable_to_immutable(#[values(false, true)] phrase_matching: bool) {
-        let mutable = mutable_inverted_index(2000, 400, phrase_matching);
+    fn test_mutable_to_immutable(
+        #[values(false, true)] phrase_matching: bool,
+        #[values(false, true)] enable_score: bool,
+    ) {
+        let mutable = mutable_inverted_index(2000, 400, phrase_matching, enable_score);
 
         // todo: test with phrase-enabled
         let immutable = ImmutableInvertedIndex::from(mutable.clone());
@@ -541,10 +596,12 @@ mod tests {
         #[case] indexed_count: u32,
         #[case] deleted_count: u32,
         #[values(false, true)] phrase_matching: bool,
+        #[values(false, true)] enable_score: bool,
     ) {
         use std::collections::HashSet;
 
-        let mutable = mutable_inverted_index(indexed_count, deleted_count, phrase_matching);
+        let mutable =
+            mutable_inverted_index(indexed_count, deleted_count, phrase_matching, enable_score);
         let immutable = ImmutableInvertedIndex::from(mutable);
 
         let mmap_dir = tempfile::tempdir().unwrap();
@@ -607,14 +664,18 @@ mod tests {
     }
 
     #[rstest]
-    fn test_mmap_index_congruence(#[values(false, true)] phrase_matching: bool) {
+    fn test_mmap_index_congruence(
+        #[values(false, true)] phrase_matching: bool,
+        #[values(false, true)] enable_score: bool,
+    ) {
         let indexed_count = 10000;
         let deleted_count = 500;
 
         let hw_counter = HardwareCounterCell::new();
         let mmap_dir = tempfile::tempdir().unwrap();
 
-        let mut mut_index = mutable_inverted_index(indexed_count, deleted_count, phrase_matching);
+        let mut mut_index =
+            mutable_inverted_index(indexed_count, deleted_count, phrase_matching, enable_score);
 
         let immutable = ImmutableInvertedIndex::from(mut_index.clone());
         MmapInvertedIndex::create(mmap_dir.path().into(), &immutable).unwrap();
