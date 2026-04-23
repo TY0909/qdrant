@@ -57,7 +57,7 @@ impl MutableInvertedIndexBuilder {
                         .postings
                         .get_mut(*token_idx as usize)
                         .expect("posting must exist")
-                        .insert(idx as PointOffsetType);
+                        .insert(idx as PointOffsetType, None);
                 }
             }
         }

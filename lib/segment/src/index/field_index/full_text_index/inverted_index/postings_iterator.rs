@@ -185,22 +185,22 @@ mod tests {
     #[test]
     fn test_postings_iterator() {
         let mut p1 = PostingList::default();
-        p1.insert(1);
-        p1.insert(2);
-        p1.insert(3);
-        p1.insert(4);
-        p1.insert(5);
+        p1.insert(1, None);
+        p1.insert(2, None);
+        p1.insert(3, None);
+        p1.insert(4, None);
+        p1.insert(5, None);
         let mut p2 = PostingList::default();
-        p2.insert(2);
-        p2.insert(4);
-        p2.insert(5);
-        p2.insert(5);
+        p2.insert(2, None);
+        p2.insert(4, None);
+        p2.insert(5, None);
+        p2.insert(5, None);
         let mut p3 = PostingList::default();
-        p3.insert(1);
-        p3.insert(2);
-        p3.insert(5);
-        p3.insert(6);
-        p3.insert(7);
+        p3.insert(1, None);
+        p3.insert(2, None);
+        p3.insert(5, None);
+        p3.insert(6, None);
+        p3.insert(7, None);
 
         let postings = vec![&p1, &p2, &p3];
         let merged = intersect_postings_iterator(postings);
