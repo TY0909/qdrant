@@ -609,9 +609,10 @@ mod tests {
         let hw_counter = HardwareCounterCell::new();
 
         MmapInvertedIndex::create(mmap_dir.path().into(), &immutable).unwrap();
-        let mmap = MmapInvertedIndex::open(mmap_dir.path().into(), false, phrase_matching)
-            .unwrap()
-            .unwrap();
+        let mmap =
+            MmapInvertedIndex::open(mmap_dir.path().into(), false, phrase_matching, enable_score)
+                .unwrap()
+                .unwrap();
 
         let imm_mmap = ImmutableInvertedIndex::try_from(&mmap).unwrap();
 
@@ -680,7 +681,7 @@ mod tests {
         let immutable = ImmutableInvertedIndex::from(mut_index.clone());
         MmapInvertedIndex::create(mmap_dir.path().into(), &immutable).unwrap();
         let mut mmap_index =
-            MmapInvertedIndex::open(mmap_dir.path().into(), false, phrase_matching)
+            MmapInvertedIndex::open(mmap_dir.path().into(), false, phrase_matching, enable_score)
                 .unwrap()
                 .unwrap();
 

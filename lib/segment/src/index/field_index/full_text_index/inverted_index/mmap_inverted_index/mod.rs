@@ -24,6 +24,9 @@ use crate::common::Flusher;
 use crate::common::buffered_update_bitslice::BufferedUpdateBitSlice;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::index::field_index::full_text_index::inverted_index::Document;
+use crate::index::field_index::full_text_index::inverted_index::positions::{
+    WeightInfo, WeightInfoAndPositions,
+};
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
@@ -42,6 +45,7 @@ const DELETED_POINTS_FILE: &str = "deleted_points.dat";
 pub struct MmapInvertedIndex {
     pub(in crate::index::field_index::full_text_index) path: PathBuf,
     pub(in crate::index::field_index::full_text_index) storage: Storage,
+    pub(in crate::index::field_index::full_text_index) has_weight: bool,
     /// Number of points which are not deleted
     pub(in crate::index::field_index::full_text_index) active_points_count: usize,
     is_on_disk: bool,
@@ -126,6 +130,7 @@ impl MmapInvertedIndex {
         path: PathBuf,
         populate: bool,
         has_positions: bool,
+        has_weight: bool,
     ) -> OperationResult<Option<Self>> {
         let postings_path = path.join(POSTINGS_FILE);
         let vocab_path = path.join(VOCAB_FILE);
@@ -145,17 +150,30 @@ impl MmapInvertedIndex {
             advice: Some(AdviceSetting::Advice(Advice::Normal)),
             prevent_caching: None,
         };
-        let postings = match has_positions {
-            false => MmapPostingsEnum::Ids(UniversalPostings::<(), MmapFile>::open(
+        let postings = match (has_weight, has_positions) {
+            (false, false) => MmapPostingsEnum::Ids(UniversalPostings::<(), MmapFile>::open(
                 &postings_path,
                 postings_open_options,
             )?),
-            true => {
+            (false, true) => {
                 MmapPostingsEnum::WithPositions(UniversalPostings::<Positions, MmapFile>::open(
                     &postings_path,
                     postings_open_options,
                 )?)
             }
+            (true, false) => {
+                MmapPostingsEnum::WithWeight(UniversalPostings::<WeightInfo, MmapFile>::open(
+                    &postings_path,
+                    postings_open_options,
+                )?)
+            }
+            (true, true) => MmapPostingsEnum::WithWeightAndPositions(UniversalPostings::<
+                WeightInfoAndPositions,
+                MmapFile,
+            >::open(
+                &postings_path,
+                postings_open_options,
+            )?),
         };
         let vocab = MmapHashMap::<str, TokenId>::open(&vocab_path, false)?;
 
@@ -186,6 +204,7 @@ impl MmapInvertedIndex {
                 point_to_tokens_count,
                 deleted_points,
             },
+            has_weight,
             active_points_count: points_count,
             is_on_disk: !populate,
         }))
@@ -241,6 +260,10 @@ impl MmapInvertedIndex {
         match &self.storage.postings {
             MmapPostingsEnum::Ids(postings) => intersection(postings, tokens, filter),
             MmapPostingsEnum::WithPositions(postings) => intersection(postings, tokens, filter),
+            MmapPostingsEnum::WithWeight(postings) => intersection(postings, tokens, filter),
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                intersection(postings, tokens, filter)
+            }
         }
     }
 
@@ -269,6 +292,10 @@ impl MmapInvertedIndex {
         match &self.storage.postings {
             MmapPostingsEnum::Ids(postings) => merge(postings, tokens, is_active),
             MmapPostingsEnum::WithPositions(postings) => merge(postings, tokens, is_active),
+            MmapPostingsEnum::WithWeight(postings) => merge(postings, tokens, is_active),
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                merge(postings, tokens, is_active)
+            }
         }
     }
 
@@ -306,6 +333,12 @@ impl MmapInvertedIndex {
             MmapPostingsEnum::WithPositions(postings) => {
                 check_intersection(postings, tokens, point_id)
             }
+            MmapPostingsEnum::WithWeight(postings) => {
+                check_intersection(postings, tokens, point_id)
+            }
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                check_intersection(postings, tokens, point_id)
+            }
         }
     }
 
@@ -334,6 +367,10 @@ impl MmapInvertedIndex {
         match &self.storage.postings {
             MmapPostingsEnum::Ids(postings) => check_any(postings, tokens, point_id),
             MmapPostingsEnum::WithPositions(postings) => check_any(postings, tokens, point_id),
+            MmapPostingsEnum::WithWeight(postings) => check_any(postings, tokens, point_id),
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                check_any(postings, tokens, point_id)
+            }
         }
     }
 
@@ -362,8 +399,28 @@ impl MmapInvertedIndex {
                 // Some token has no posting list -> no matches
                 Ok(result.unwrap_or_default())
             }
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                // Deduplicate phrase tokens: repeated tokens (e.g. "zn zn") must
+                // not fetch the same posting list twice, otherwise positions get
+                // added twice in `phrase_in_all_postings`.
+                let unique_tokens = phrase.to_token_set();
+                let result = postings.with_all_or_none_postings(
+                    unique_tokens.tokens(),
+                    |selected_postings| {
+                        Ok(intersect_compressed_postings_phrase_iterator(
+                            phrase,
+                            selected_postings,
+                            is_active,
+                        )
+                        .collect())
+                    },
+                )?;
+                // Some token has no posting list -> no matches
+                Ok(result.unwrap_or_default())
+            }
             // cannot do phrase matching if there's no positional information
             MmapPostingsEnum::Ids(_postings) => Ok(Vec::new()),
+            MmapPostingsEnum::WithWeight(_postings) => Ok(Vec::new()),
         }
     }
 
@@ -393,8 +450,24 @@ impl MmapInvertedIndex {
                 // Some token has no posting list -> no match
                 Ok(result.unwrap_or(false))
             }
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                let unique_tokens = phrase.to_token_set();
+                let result = postings.with_all_or_none_postings(
+                    unique_tokens.tokens(),
+                    |selected_postings| {
+                        Ok(check_compressed_postings_phrase(
+                            phrase,
+                            point_id,
+                            selected_postings,
+                        ))
+                    },
+                )?;
+                // Some token has no posting list -> no match
+                Ok(result.unwrap_or(false))
+            }
             // cannot do phrase matching if there's no positional information
             MmapPostingsEnum::Ids(_postings) => Ok(false),
+            MmapPostingsEnum::WithWeight(_postings) => Ok(false),
         }
     }
 
@@ -433,6 +506,7 @@ impl MmapInvertedIndex {
         let Self {
             path: _,
             storage,
+            has_weight: _,
             active_points_count: _,
             is_on_disk: _,
         } = self;

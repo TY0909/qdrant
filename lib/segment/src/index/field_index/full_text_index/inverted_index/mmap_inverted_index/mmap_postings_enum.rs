@@ -6,10 +6,15 @@ use super::super::positions::Positions;
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::full_text_index::inverted_index::TokenId;
 use crate::index::field_index::full_text_index::inverted_index::mmap_inverted_index::uio_postings::UniversalPostings;
+use crate::index::field_index::full_text_index::inverted_index::positions::{
+    WeightInfo, WeightInfoAndPositions,
+};
 
 pub enum MmapPostingsEnum {
     Ids(UniversalPostings<(), MmapFile>),
+    WithWeight(UniversalPostings<WeightInfo, MmapFile>),
     WithPositions(UniversalPostings<Positions, MmapFile>),
+    WithWeightAndPositions(UniversalPostings<WeightInfoAndPositions, MmapFile>),
 }
 
 impl MmapPostingsEnum {
@@ -17,6 +22,8 @@ impl MmapPostingsEnum {
         match self {
             MmapPostingsEnum::Ids(postings) => postings.populate(),
             MmapPostingsEnum::WithPositions(postings) => postings.populate(),
+            MmapPostingsEnum::WithWeight(postings) => postings.populate(),
+            MmapPostingsEnum::WithWeightAndPositions(postings) => postings.populate(),
         }
     }
 
@@ -24,6 +31,8 @@ impl MmapPostingsEnum {
         match self {
             MmapPostingsEnum::Ids(postings) => postings.clear_cache(),
             MmapPostingsEnum::WithPositions(postings) => postings.clear_cache(),
+            MmapPostingsEnum::WithWeight(postings) => postings.clear_cache(),
+            MmapPostingsEnum::WithWeightAndPositions(postings) => postings.clear_cache(),
         }
     }
 
@@ -31,6 +40,8 @@ impl MmapPostingsEnum {
         match self {
             MmapPostingsEnum::Ids(postings) => postings.posting_len(token_id),
             MmapPostingsEnum::WithPositions(postings) => postings.posting_len(token_id),
+            MmapPostingsEnum::WithWeight(postings) => postings.posting_len(token_id),
+            MmapPostingsEnum::WithWeightAndPositions(postings) => postings.posting_len(token_id),
         }
     }
 
@@ -50,6 +61,16 @@ impl MmapPostingsEnum {
             MmapPostingsEnum::WithPositions(postings) => {
                 let raw = postings.get(token_id).unwrap()?;
                 let view = raw.as_view::<Positions>().unwrap();
+                view.into_iter().map(|elem| elem.id).collect()
+            }
+            MmapPostingsEnum::WithWeight(postings) => {
+                let raw = postings.get(token_id).unwrap()?;
+                let view = raw.as_view::<()>().unwrap();
+                view.into_iter().map(|elem| elem.id).collect()
+            }
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                let raw = postings.get(token_id).unwrap()?;
+                let view = raw.as_view::<()>().unwrap();
                 view.into_iter().map(|elem| elem.id).collect()
             }
         };
