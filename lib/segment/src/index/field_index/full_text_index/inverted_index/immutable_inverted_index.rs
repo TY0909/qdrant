@@ -642,6 +642,12 @@ impl TryFrom<&MmapInvertedIndex> for ImmutableInvertedIndex {
             MmapPostingsEnum::WithPositions(postings) => {
                 ImmutablePostings::WithPositions(postings.all_postings()?)
             }
+            MmapPostingsEnum::WithWeight(postings) => {
+                ImmutablePostings::WithWeight(postings.all_postings()?)
+            }
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                ImmutablePostings::WithWeightAndPositions(postings.all_postings()?)
+            }
         };
 
         let vocab: HashMap<String, TokenId> = index
@@ -670,7 +676,7 @@ impl TryFrom<&MmapInvertedIndex> for ImmutableInvertedIndex {
         Ok(ImmutableInvertedIndex {
             postings,
             vocab,
-            has_weight: false,
+            has_weight: index.has_weight,
             point_to_tokens_count,
             points_count: index.points_count(),
         })

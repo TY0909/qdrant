@@ -16,6 +16,7 @@ use crate::common::Flusher;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::index::TextIndexParams;
 use crate::index::field_index::full_text_index::immutable_text_index::ImmutableFullTextIndex;
+use crate::index::field_index::full_text_index::inverted_index::TokenWeightMap;
 use crate::index::field_index::{FieldIndexBuilderTrait, ValueIndexer};
 
 pub struct MmapFullTextIndex {
@@ -33,10 +34,11 @@ impl MmapFullTextIndex {
         let populate = !is_on_disk;
 
         let has_positions = config.phrase_matching == Some(true);
+        let has_weight = config.enable_score == Some(true);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
 
         let inverted_index =
-            MmapInvertedIndex::open(path, populate, has_positions, deleted_points)?;
+            MmapInvertedIndex::open(path, populate, has_positions, has_weight, deleted_points)?;
         Ok(inverted_index.map(|inverted_index| Self {
             inverted_index,
             tokenizer,
@@ -169,8 +171,14 @@ impl ValueIndexer for FullTextMmapIndexBuilder {
                 .index_document(id, document, hw_counter)?;
         }
 
-        let token_set = TokenSet::from_iter(tokens);
-        self.mutable_index.index_tokens(id, token_set, hw_counter)?;
+        if self.mutable_index.has_weight {
+            let token_weight_map = TokenWeightMap::from_tokens(&tokens);
+            self.mutable_index
+                .index_token_weight_map(id, token_weight_map, hw_counter)?;
+        } else {
+            let token_set = TokenSet::from_iter(tokens);
+            self.mutable_index.index_tokens(id, token_set, hw_counter)?;
+        }
 
         Ok(())
     }
@@ -216,14 +224,14 @@ impl FieldIndexBuilderTrait for FullTextMmapIndexBuilder {
 
         let populate = !is_on_disk;
         let has_positions = config.phrase_matching.unwrap_or_default();
+        let has_weight = config.enable_score.unwrap_or(false);
         let inverted_index =
-            MmapInvertedIndex::open(path, populate, has_positions, &deleted_points)?.ok_or_else(
-                || {
+            MmapInvertedIndex::open(path, populate, has_positions, has_weight, &deleted_points)?
+                .ok_or_else(|| {
                     OperationError::service_error(
                         "Failed to open MmapInvertedIndex that was just created",
                     )
-                },
-            )?;
+                })?;
 
         let mmap_index = MmapFullTextIndex {
             inverted_index,

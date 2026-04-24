@@ -624,6 +624,7 @@ mod tests {
             mmap_dir.path().into(),
             false,
             phrase_matching,
+            enable_score,
             &empty_deleted,
         )
         .unwrap()
@@ -705,6 +706,7 @@ mod tests {
             mmap_dir.path().into(),
             false,
             phrase_matching,
+            enable_score,
             &empty_deleted,
         )
         .unwrap()
