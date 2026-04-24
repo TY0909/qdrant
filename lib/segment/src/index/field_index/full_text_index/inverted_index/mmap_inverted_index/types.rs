@@ -4,7 +4,9 @@ use posting_list::{
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
+use crate::index::field_index::full_text_index::inverted_index::positions::{
+    Positions, WeightInfo, WeightInfoAndPositions,
+};
 
 pub const ALIGNMENT: usize = 4;
 
@@ -19,6 +21,10 @@ pub(in crate::index::field_index::full_text_index) trait ZerocopyPostingValue:
 impl ZerocopyPostingValue for () {}
 
 impl ZerocopyPostingValue for Positions {}
+
+impl ZerocopyPostingValue for WeightInfo {}
+
+impl ZerocopyPostingValue for WeightInfoAndPositions {}
 
 #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
 #[repr(C)]

@@ -1,5 +1,5 @@
-use posting_list::{PostingValue, UnsizedHandler, UnsizedValue};
-use zerocopy::{FromBytes, IntoBytes};
+use posting_list::{PostingValue, SizedHandler, SizedValue, UnsizedHandler, UnsizedValue};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::index::field_index::full_text_index::inverted_index::{Document, TokenId};
 
@@ -47,6 +47,121 @@ impl UnsizedValue for Positions {
         let positions =
             <[u32]>::ref_from_bytes(data).expect("write_len should provide correct length");
         Positions(positions.to_vec())
+    }
+}
+
+#[derive(Default, Clone, Debug, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub struct WeightInfo {
+    token_weight: zerocopy::little_endian::F32,
+    max_next_weight: zerocopy::little_endian::F32,
+}
+
+impl WeightInfo {
+    pub(super) fn new(token_weight: f32, max_next_weight: f32) -> Self {
+        Self {
+            token_weight: zerocopy::little_endian::F32::new(token_weight),
+            max_next_weight: zerocopy::little_endian::F32::new(max_next_weight),
+        }
+    }
+}
+
+impl PostingValue for WeightInfo {
+    type Handler = SizedHandler<Self>;
+}
+
+impl SizedValue for WeightInfo {}
+
+#[derive(Default, Clone, Debug)]
+pub struct WeightInfoAndPositions {
+    token_weight: f32,
+    max_next_weight: f32,
+    positions: Vec<u32>,
+}
+
+impl WeightInfoAndPositions {
+    pub(super) fn new(token_weight: f32, max_next_weight: f32, positions: Vec<u32>) -> Self {
+        Self {
+            token_weight,
+            max_next_weight,
+            positions,
+        }
+    }
+}
+
+impl PostingValue for WeightInfoAndPositions {
+    type Handler = UnsizedHandler<Self>;
+}
+
+impl UnsizedValue for WeightInfoAndPositions {
+    fn write_len(&self) -> usize {
+        self.token_weight.as_bytes().len()
+            + self.max_next_weight.as_bytes().len()
+            + self.positions.as_slice().as_bytes().len()
+    }
+
+    fn write_to(&self, dst: &mut [u8]) {
+        let f32_size = std::mem::size_of::<f32>();
+        let header_size = 2 * f32_size;
+
+        assert_eq!(
+            dst.len(),
+            self.write_len(),
+            "write_len should provide correct length"
+        );
+
+        dst[..f32_size].copy_from_slice(self.token_weight.as_bytes());
+        dst[f32_size..header_size].copy_from_slice(self.max_next_weight.as_bytes());
+        dst[header_size..].copy_from_slice(self.positions.as_slice().as_bytes());
+    }
+
+    fn from_bytes(data: &[u8]) -> Self {
+        let f32_size = std::mem::size_of::<f32>();
+        let header_size = 2 * f32_size;
+
+        let token_weight = *f32::ref_from_bytes(&data[..f32_size])
+            .expect("write_len should provide correct length");
+        let max_next_weight = *f32::ref_from_bytes(&data[f32_size..header_size])
+            .expect("write_len should provide correct length");
+        let positions = <[u32]>::ref_from_bytes(&data[header_size..])
+            .expect("write_len should provide correct length");
+
+        Self {
+            token_weight,
+            max_next_weight,
+            positions: positions.to_vec(),
+        }
+    }
+}
+
+pub trait PositionalPostingValue {
+    fn is_empty(&self) -> bool;
+    fn to_token_positions(&self, token_id: TokenId) -> Vec<TokenPosition>;
+}
+
+impl PositionalPostingValue for Positions {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn to_token_positions(&self, token_id: TokenId) -> Vec<TokenPosition> {
+        self.to_token_positions(token_id)
+    }
+}
+
+impl PositionalPostingValue for WeightInfoAndPositions {
+    fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    fn to_token_positions(&self, token_id: TokenId) -> Vec<TokenPosition> {
+        self.positions
+            .iter()
+            .map(|pos| TokenPosition {
+                token_id,
+                position: *pos,
+            })
+            .collect()
     }
 }
 

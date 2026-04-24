@@ -17,6 +17,9 @@ use super::postings_iterator::{
 };
 use super::{Document, InvertedIndex, ParsedQuery, TokenId, TokenSet};
 use crate::common::operation_error::{OperationError, OperationResult};
+use crate::index::field_index::full_text_index::inverted_index::positions::{
+    WeightInfo, WeightInfoAndPositions,
+};
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
@@ -42,6 +45,8 @@ fn get_all_or_none<'a, V: PostingValue>(
 pub struct ImmutableInvertedIndex {
     pub(in crate::index::field_index::full_text_index) postings: ImmutablePostings,
     pub(in crate::index::field_index::full_text_index) vocab: HashMap<String, TokenId>,
+    pub(in crate::index::field_index::full_text_index) has_weight: bool,
+
     pub(in crate::index::field_index::full_text_index) point_to_tokens_count: Vec<usize>,
     pub(in crate::index::field_index::full_text_index) points_count: usize,
 }
@@ -63,7 +68,7 @@ impl ImmutableInvertedIndex {
             postings: &'a [PostingList<V>],
             tokens: TokenSet,
             filter: impl Fn(PointOffsetType) -> bool + 'a,
-        ) -> impl Iterator<Item = PointOffsetType> + 'a {
+        ) -> Box<dyn Iterator<Item = PointOffsetType> + 'a> {
             let postings_opt: Option<Vec<_>> = tokens
                 .tokens()
                 .iter()
@@ -72,15 +77,15 @@ impl ImmutableInvertedIndex {
 
             // All tokens must have postings
             let Some(postings) = postings_opt else {
-                return Either::Left(std::iter::empty());
+                return Box::new(std::iter::empty());
             };
 
             // Query must not be empty
             if postings.is_empty() {
-                return Either::Left(std::iter::empty());
+                return Box::new(std::iter::empty());
             };
 
-            Either::Right(intersect_compressed_postings_iterator(postings, filter))
+            Box::new(intersect_compressed_postings_iterator(postings, filter))
         }
 
         match &self.postings {
@@ -88,6 +93,12 @@ impl ImmutableInvertedIndex {
                 Either::Left(intersection(postings, tokens, filter))
             }
             ImmutablePostings::WithPositions(postings) => {
+                Either::Right(intersection(postings, tokens, filter))
+            }
+            ImmutablePostings::WithWeight(postings) => {
+                Either::Right(intersection(postings, tokens, filter))
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
                 Either::Right(intersection(postings, tokens, filter))
             }
         }
@@ -109,7 +120,7 @@ impl ImmutableInvertedIndex {
             postings: &'a [PostingList<V>],
             tokens: TokenSet,
             is_active: impl Fn(PointOffsetType) -> bool + 'a,
-        ) -> impl Iterator<Item = PointOffsetType> + 'a {
+        ) -> Box<dyn Iterator<Item = PointOffsetType> + 'a> {
             let postings: Vec<_> = tokens
                 .tokens()
                 .iter()
@@ -118,15 +129,21 @@ impl ImmutableInvertedIndex {
 
             // Query must not be empty
             if postings.is_empty() {
-                return Either::Left(std::iter::empty());
+                return Box::new(std::iter::empty());
             };
 
-            Either::Right(merge_compressed_postings_iterator(postings, is_active))
+            Box::new(merge_compressed_postings_iterator(postings, is_active))
         }
 
         match &self.postings {
             ImmutablePostings::Ids(postings) => Either::Left(merge(postings, tokens, is_active)),
             ImmutablePostings::WithPositions(postings) => {
+                Either::Right(merge(postings, tokens, is_active))
+            }
+            ImmutablePostings::WithWeight(postings) => {
+                Either::Right(merge(postings, tokens, is_active))
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
                 Either::Right(merge(postings, tokens, is_active))
             }
         }
@@ -159,6 +176,12 @@ impl ImmutableInvertedIndex {
             ImmutablePostings::WithPositions(postings) => {
                 check_intersection(postings, tokens, point_id)
             }
+            ImmutablePostings::WithWeight(postings) => {
+                check_intersection(postings, tokens, point_id)
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
+                check_intersection(postings, tokens, point_id)
+            }
         }
     }
 
@@ -187,6 +210,10 @@ impl ImmutableInvertedIndex {
         match &self.postings {
             ImmutablePostings::Ids(postings) => check_any(postings, tokens, point_id),
             ImmutablePostings::WithPositions(postings) => check_any(postings, tokens, point_id),
+            ImmutablePostings::WithWeight(postings) => check_any(postings, tokens, point_id),
+            ImmutablePostings::WithWeightAndPositions(postings) => {
+                check_any(postings, tokens, point_id)
+            }
         }
     }
 
@@ -218,8 +245,24 @@ impl ImmutableInvertedIndex {
                     Either::Left(std::iter::empty())
                 }
             }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
+                // Deduplicate phrase tokens: repeated tokens (e.g. "zn zn") must
+                // not fetch the same posting list twice, otherwise positions get
+                // added twice in `phrase_in_all_postings`.
+                let unique_tokens = phrase.to_token_set();
+                if let Some(selected_postings) = get_all_or_none(postings, unique_tokens.tokens()) {
+                    Either::Right(intersect_compressed_postings_phrase_iterator(
+                        phrase,
+                        selected_postings,
+                        is_active,
+                    ))
+                } else {
+                    Either::Left(std::iter::empty())
+                }
+            }
             // cannot do phrase matching if there's no positional information
             ImmutablePostings::Ids(_postings) => Either::Left(std::iter::empty()),
+            ImmutablePostings::WithWeight(_postings) => Either::Left(std::iter::empty()),
         }
     }
 
@@ -244,8 +287,18 @@ impl ImmutableInvertedIndex {
 
                 check_compressed_postings_phrase(phrase, point_id, selected_postings)
             }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
+                let unique_tokens = phrase.to_token_set();
+                let Some(selected_postings) = get_all_or_none(postings, unique_tokens.tokens())
+                else {
+                    return false;
+                };
+
+                check_compressed_postings_phrase(phrase, point_id, selected_postings)
+            }
             // cannot do phrase matching if there's no positional information
             ImmutablePostings::Ids(_postings) => false,
+            ImmutablePostings::WithWeight(_postings) => false,
         }
     }
 }
@@ -368,27 +421,38 @@ impl From<MutableInvertedIndex> for ImmutableInvertedIndex {
             postings,
             vocab,
             point_to_tokens,
-            has_weight: _,
+            has_weight,
             point_to_doc,
             points_count,
         } = index;
 
         let (postings, vocab, orig_to_new_token) = optimized_postings_and_vocab(postings, vocab);
 
-        let postings = match point_to_doc {
-            None => ImmutablePostings::Ids(create_compressed_postings(postings)),
-            Some(point_to_doc) => {
+        let postings = match (has_weight, point_to_doc) {
+            (false, None) => ImmutablePostings::Ids(create_compressed_postings(postings)),
+            (false, Some(point_to_doc)) => {
                 ImmutablePostings::WithPositions(create_compressed_postings_with_positions(
                     postings,
                     point_to_doc,
                     &orig_to_new_token,
                 ))
             }
+            (true, None) => {
+                ImmutablePostings::WithWeight(create_compressed_postings_with_weight(postings))
+            }
+            (true, Some(point_to_doc)) => ImmutablePostings::WithWeightAndPositions(
+                create_compressed_postings_with_weight_and_positions(
+                    postings,
+                    point_to_doc,
+                    &orig_to_new_token,
+                ),
+            ),
         };
 
         ImmutableInvertedIndex {
             postings,
             vocab,
+            has_weight,
             point_to_tokens_count: point_to_tokens
                 .iter()
                 .map(|tokenset| {
@@ -450,6 +514,71 @@ fn create_compressed_postings(
             builder.build()
         })
         .collect()
+}
+
+fn create_compressed_postings_with_weight(
+    postings: Vec<super::posting_list::PostingList>,
+) -> Vec<PostingList<WeightInfo>> {
+    postings
+        .into_iter()
+        .map(|posting| {
+            let mut builder = PostingBuilder::new();
+            for element in posting.iter_element() {
+                builder.add(
+                    element.point_id(),
+                    WeightInfo::new(element.weight(), element.max_next_weight()),
+                );
+            }
+            builder.build()
+        })
+        .collect()
+}
+
+fn create_compressed_postings_with_weight_and_positions(
+    postings: Vec<super::posting_list::PostingList>,
+    point_to_doc: Vec<Option<Document>>,
+    orig_to_new_token: &AHashMap<TokenId, TokenId>,
+) -> Vec<PostingList<WeightInfoAndPositions>> {
+    // precalculate positions for each token in each document
+    let mut point_to_tokens_positions: Vec<AHashMap<TokenId, Vec<u32>>> = point_to_doc
+        .into_iter()
+        .map(|doc_opt| {
+            let Some(doc) = doc_opt else {
+                return AHashMap::new();
+            };
+
+            // get positions for each token in the document
+            let doc_len = doc.len();
+            (0u32..).zip(doc).fold(
+                AHashMap::with_capacity(doc_len),
+                |mut map: AHashMap<u32, Vec<u32>>, (position, token)| {
+                    // use translation of original token to new token from postings optimization
+                    let new_token = orig_to_new_token[&token];
+                    map.entry(new_token).or_default().push(position);
+                    map
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    (0u32..)
+            .zip(postings)
+            .map(|(token, posting)| {
+                posting
+                    .iter_element()
+                    .map(|element| {
+                        let id = element.point_id();
+                        let positions = point_to_tokens_positions[id as usize]
+                            .remove(&token)
+                            .expect(
+                                "If id is this token's posting list, it should have at least one position",
+                            );
+                        let weight_and_positions = WeightInfoAndPositions::new(element.weight(), element.max_next_weight(), positions);
+                        (id, weight_and_positions)
+                    })
+                    .collect()
+            })
+            .collect()
 }
 
 fn create_compressed_postings_with_positions(
@@ -523,6 +652,7 @@ impl TryFrom<&MmapInvertedIndex> for ImmutableInvertedIndex {
         Ok(ImmutableInvertedIndex {
             postings,
             vocab,
+            has_weight: false,
             point_to_tokens_count: index.storage.point_to_tokens_count.to_vec(),
             points_count: index.points_count(),
         })
@@ -535,6 +665,7 @@ impl ImmutableInvertedIndex {
         let Self {
             postings,
             vocab,
+            has_weight: _,
             point_to_tokens_count,
             points_count: _,
         } = self;

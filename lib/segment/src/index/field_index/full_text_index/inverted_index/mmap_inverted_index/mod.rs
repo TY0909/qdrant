@@ -60,6 +60,7 @@ impl MmapInvertedIndex {
         let ImmutableInvertedIndex {
             postings,
             vocab,
+            has_weight: _,
             point_to_tokens_count,
             points_count: _,
         } = inverted_index;
@@ -74,6 +75,12 @@ impl MmapInvertedIndex {
         match postings {
             ImmutablePostings::Ids(postings) => create_postings_file(postings_path, postings)?,
             ImmutablePostings::WithPositions(postings) => {
+                create_postings_file(postings_path, postings)?
+            }
+            ImmutablePostings::WithWeight(postings) => {
+                create_postings_file(postings_path, postings)?
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
                 create_postings_file(postings_path, postings)?
             }
         }
