@@ -2,14 +2,16 @@
 use common::types::PointOffsetType;
 use posting_list::PostingList;
 
-use super::positions::Positions;
-use crate::index::field_index::full_text_index::inverted_index::TokenId;
+use super::TokenId;
+use super::positions::{Positions, WeightInfo, WeightInfoAndPositions};
 
 #[cfg_attr(test, derive(Clone))]
 #[derive(Debug)]
 pub enum ImmutablePostings {
     Ids(Vec<PostingList<()>>),
     WithPositions(Vec<PostingList<Positions>>),
+    WithWeight(Vec<PostingList<WeightInfo>>),
+    WithWeightAndPositions(Vec<PostingList<WeightInfoAndPositions>>),
 }
 
 impl ImmutablePostings {
@@ -17,6 +19,8 @@ impl ImmutablePostings {
         match self {
             ImmutablePostings::Ids(lists) => lists.len(),
             ImmutablePostings::WithPositions(lists) => lists.len(),
+            ImmutablePostings::WithWeight(lists) => lists.len(),
+            ImmutablePostings::WithWeightAndPositions(lists) => lists.len(),
         }
     }
 
@@ -26,6 +30,12 @@ impl ImmutablePostings {
                 postings.get(token as usize).map(|posting| posting.len())
             }
             ImmutablePostings::WithPositions(postings) => {
+                postings.get(token as usize).map(|posting| posting.len())
+            }
+            ImmutablePostings::WithWeight(postings) => {
+                postings.get(token as usize).map(|posting| posting.len())
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
                 postings.get(token as usize).map(|posting| posting.len())
             }
         }
@@ -42,6 +52,14 @@ impl ImmutablePostings {
                 lists.capacity() * std::mem::size_of::<PostingList<Positions>>()
                     + lists.iter().map(|p| p.heap_bytes()).sum::<usize>()
             }
+            ImmutablePostings::WithWeight(lists) => {
+                lists.capacity() * std::mem::size_of::<PostingList<WeightInfo>>()
+                    + lists.iter().map(|p| p.heap_bytes()).sum::<usize>()
+            }
+            ImmutablePostings::WithWeightAndPositions(lists) => {
+                lists.capacity() * std::mem::size_of::<PostingList<WeightInfoAndPositions>>()
+                    + lists.iter().map(|p| p.heap_bytes()).sum::<usize>()
+            }
         }
     }
 
@@ -56,6 +74,18 @@ impl ImmutablePostings {
                     as Box<dyn Iterator<Item = PointOffsetType>>
             }),
             ImmutablePostings::WithPositions(postings) => {
+                postings.get(token_id as usize).map(|posting| {
+                    Box::new(posting.iter().map(|elem| elem.id))
+                        as Box<dyn Iterator<Item = PointOffsetType>>
+                })
+            }
+            ImmutablePostings::WithWeight(postings) => {
+                postings.get(token_id as usize).map(|posting| {
+                    Box::new(posting.iter().map(|elem| elem.id))
+                        as Box<dyn Iterator<Item = PointOffsetType>>
+                })
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
                 postings.get(token_id as usize).map(|posting| {
                     Box::new(posting.iter().map(|elem| elem.id))
                         as Box<dyn Iterator<Item = PointOffsetType>>

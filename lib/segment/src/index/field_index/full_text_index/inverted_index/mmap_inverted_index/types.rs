@@ -4,7 +4,9 @@ use posting_list::{
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
+use crate::index::field_index::full_text_index::inverted_index::positions::{
+    Positions, WeightInfo, WeightInfoAndPositions,
+};
 
 pub const ALIGNMENT: usize = 4;
 
@@ -20,7 +22,22 @@ impl ZerocopyPostingValue for () {}
 
 impl ZerocopyPostingValue for Positions {}
 
-#[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+impl ZerocopyPostingValue for WeightInfo {}
+
+impl ZerocopyPostingValue for WeightInfoAndPositions {}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    bytemuck::Pod,
+    bytemuck::Zeroable,
+    FromBytes,
+    Immutable,
+    IntoBytes,
+    KnownLayout,
+)]
 #[repr(C)]
 pub(in crate::index::field_index::full_text_index) struct PostingsHeader {
     /// Number of posting lists. One posting list per term
