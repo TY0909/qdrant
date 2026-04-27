@@ -4092,6 +4092,11 @@ pub(crate) mod test_utils {
     }
 }
 
+pub struct TokenWeightSet {
+    pub tokens: Vec<String>,
+    pub idfs: Vec<f32>,
+}
+
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;

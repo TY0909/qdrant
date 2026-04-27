@@ -64,6 +64,10 @@ impl WeightInfo {
             max_next_weight: zerocopy::little_endian::F32::new(max_next_weight),
         }
     }
+
+    pub(super) fn token_weight(&self) -> f32 {
+        self.token_weight.get()
+    }
 }
 
 impl PostingValue for WeightInfo {
@@ -86,6 +90,10 @@ impl WeightInfoAndPositions {
             max_next_weight,
             positions,
         }
+    }
+
+    pub(super) fn token_weight(&self) -> f32 {
+        self.token_weight
     }
 }
 
