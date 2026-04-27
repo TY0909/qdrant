@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::top_k::TopK;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use itertools::Either;
 
-use super::posting_list::PostingList;
+use super::posting_list::{PostingList, PostingWeightCursor};
 use super::postings_iterator::{intersect_postings_iterator, merge_postings_iterator};
 use super::{Document, InvertedIndex, ParsedQuery, TokenId, TokenSet};
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::full_text_index::inverted_index::TokenWeightMap;
+use crate::types::TokenWeightSet;
 
 #[cfg_attr(test, derive(Clone))]
 pub struct MutableInvertedIndex {
@@ -111,6 +113,57 @@ impl MutableInvertedIndex {
             });
 
         Box::new(iter)
+    }
+
+    pub fn search_text_index_plain(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        ordered_prefilterd_points: &[PointOffsetType],
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        if !self.has_weight {
+            return Ok(vec![]);
+        }
+
+        // Collect (cursor, idf) pairs for each query token that exists in the vocab.
+        // Each cursor maintains its position so that advancing through sorted point IDs
+        // only searches the remaining (unconsumed) portion of the posting list.
+        let mut cursors: Vec<(PostingWeightCursor<'_>, f32)> = query
+            .tokens
+            .iter()
+            .zip(query.idfs.iter())
+            .filter_map(|(token, &idf)| {
+                let tid = *self.vocab.get(token.as_str())?;
+                let cursor = self.postings.get(tid as usize)?.weight_cursor()?;
+                Some((cursor, idf))
+            })
+            .collect();
+
+        if cursors.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut top_k = TopK::new(top);
+
+        // Both `ordered_prefilterd_points` and posting lists are sorted by point ID.
+        // We advance each cursor forward in tandem, so every posting element is visited
+        // at most once across the entire loop.
+        for &point_id in ordered_prefilterd_points {
+            let mut score = 0.0f32;
+            for (cursor, idf) in cursors.iter_mut() {
+                if let Some(tf) = cursor.skip_to(point_id) {
+                    score += tf * (*idf);
+                }
+            }
+            if score > 0.0 {
+                top_k.push(ScoredPointOffset {
+                    idx: point_id,
+                    score,
+                });
+            }
+        }
+
+        Ok(top_k.into_vec())
     }
 }
 

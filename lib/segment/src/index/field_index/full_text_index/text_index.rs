@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use ahash::AHashSet;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,7 +22,7 @@ use crate::index::field_index::{
 };
 use crate::index::payload_config::{IndexMutability, StorageType};
 use crate::telemetry::PayloadIndexTelemetry;
-use crate::types::{FieldCondition, Match, MatchPhrase, MatchText, PayloadKeyType};
+use crate::types::{FieldCondition, Match, MatchPhrase, MatchText, PayloadKeyType, TokenWeightSet};
 
 #[allow(clippy::large_enum_variant)]
 pub enum FullTextIndex {
@@ -410,6 +410,39 @@ impl FullTextIndex {
             FullTextIndex::Mmap(index) => StorageType::Mmap {
                 is_on_disk: index.is_on_disk(),
             },
+        }
+    }
+
+    pub fn get_enable_score(&self) -> bool {
+        match self {
+            FullTextIndex::Mutable(index) => index.inverted_index.has_weight,
+            FullTextIndex::Immutable(index) => index.inverted_index.has_weight,
+            FullTextIndex::Mmap(index) => index.inverted_index.has_weight,
+        }
+    }
+
+    pub fn search_text_index_plain(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        ordered_prefilterd_points: &[PointOffsetType],
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        match self {
+            FullTextIndex::Mutable(index) => {
+                index
+                    .inverted_index
+                    .search_text_index_plain(query, top, ordered_prefilterd_points)
+            }
+            FullTextIndex::Immutable(index) => {
+                index
+                    .inverted_index
+                    .search_text_index_plain(query, top, ordered_prefilterd_points)
+            }
+            FullTextIndex::Mmap(index) => {
+                index
+                    .inverted_index
+                    .search_text_index_plain(query, top, ordered_prefilterd_points)
+            }
         }
     }
 }

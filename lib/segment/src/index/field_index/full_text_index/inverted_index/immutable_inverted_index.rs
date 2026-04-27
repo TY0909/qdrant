@@ -3,9 +3,10 @@ use std::fmt::Debug;
 
 use ahash::AHashMap;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::top_k::TopK;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use itertools::Either;
-use posting_list::{PostingBuilder, PostingList, PostingListView, PostingValue};
+use posting_list::{PostingBuilder, PostingIterator, PostingList, PostingListView, PostingValue};
 
 use super::immutable_postings_enum::ImmutablePostings;
 use super::mmap_inverted_index::MmapInvertedIndex;
@@ -23,6 +24,7 @@ use crate::index::field_index::full_text_index::inverted_index::positions::{
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
+use crate::types::TokenWeightSet;
 
 /// Collect posting-list views for every token in `token_ids`.
 /// Returns `None` as soon as any token id is out of range.
@@ -300,6 +302,88 @@ impl ImmutableInvertedIndex {
             ImmutablePostings::Ids(_postings) => false,
             ImmutablePostings::WithWeight(_postings) => false,
         }
+    }
+
+    pub fn search_text_index_plain(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        ordered_prefiltered_points: &[PointOffsetType],
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        if !self.has_weight {
+            return Ok(vec![]);
+        }
+
+        /// Generic helper: collect posting iterators for query tokens, then
+        /// iterate through sorted prefiltered points, advancing each iterator
+        /// in tandem (just like the sparse-vector `plain_search` pipeline).
+        fn score_with_iterators<V: PostingValue>(
+            postings: &[PostingList<V>],
+            vocab: &HashMap<String, TokenId>,
+            query: &TokenWeightSet,
+            top: usize,
+            ordered_prefiltered_points: &[PointOffsetType],
+            extract_weight: fn(&V) -> f32,
+        ) -> Vec<ScoredPointOffset> {
+            let mut iterators: Vec<(PostingIterator<'_, V>, f32)> = query
+                .tokens
+                .iter()
+                .zip(query.idfs.iter())
+                .filter_map(|(token, &idf)| {
+                    let tid = *vocab.get(token.as_str())?;
+                    let iter = postings.get(tid as usize)?.iter();
+                    Some((iter, idf))
+                })
+                .collect();
+
+            if iterators.is_empty() {
+                return vec![];
+            }
+
+            let mut top_k = TopK::new(top);
+
+            for &point_id in ordered_prefiltered_points {
+                let mut score = 0.0f32;
+                for (iter, idf) in iterators.iter_mut() {
+                    if let Some(elem) = iter.advance_until_greater_or_equal(point_id) {
+                        if elem.id == point_id {
+                            score += extract_weight(&elem.value) * *idf;
+                        }
+                    }
+                }
+                if score > 0.0 {
+                    top_k.push(ScoredPointOffset {
+                        idx: point_id,
+                        score,
+                    });
+                }
+            }
+
+            top_k.into_vec()
+        }
+
+        let result = match &self.postings {
+            ImmutablePostings::WithWeight(postings) => score_with_iterators(
+                postings,
+                &self.vocab,
+                query,
+                top,
+                ordered_prefiltered_points,
+                |w| w.token_weight(),
+            ),
+            ImmutablePostings::WithWeightAndPositions(postings) => score_with_iterators(
+                postings,
+                &self.vocab,
+                query,
+                top,
+                ordered_prefiltered_points,
+                |w| w.token_weight(),
+            ),
+            // ID-only or position-only postings have no weights
+            ImmutablePostings::Ids(_) | ImmutablePostings::WithPositions(_) => vec![],
+        };
+
+        Ok(result)
     }
 }
 

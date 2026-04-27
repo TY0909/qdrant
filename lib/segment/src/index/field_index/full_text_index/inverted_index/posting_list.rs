@@ -120,6 +120,11 @@ impl PostingElementExList {
         self.0.iter()
     }
 
+    /// Returns a slice-based cursor for efficient ordered traversal.
+    fn as_slice(&self) -> &[PostingElementEx] {
+        &self.0
+    }
+
     fn serialized_size(&self) -> usize {
         let elem_size = std::mem::size_of::<PostingElementEx>();
         std::mem::size_of::<Vec<PostingElementEx>>() + self.0.capacity() * elem_size
@@ -229,6 +234,49 @@ impl PostingList {
             // Approximate heap usage with serialized size
             PostingList::Ids { list } => list.serialized_size(),
             PostingList::WithWeight { list } => list.serialized_size(),
+        }
+    }
+
+    /// Returns a cursor for efficient ordered traversal of weighted posting lists.
+    /// Returns `None` for ID-only posting lists.
+    pub(super) fn weight_cursor(&self) -> Option<PostingWeightCursor<'_>> {
+        match self {
+            PostingList::Ids { .. } => None,
+            PostingList::WithWeight { list } => Some(PostingWeightCursor {
+                elements: list.as_slice(),
+                current_index: 0,
+            }),
+        }
+    }
+}
+
+/// Cursor over a sorted weighted posting list that supports efficient forward traversal.
+///
+/// Uses binary search from the current position to skip to a target point ID,
+/// avoiding redundant work when the caller iterates in sorted order.
+pub(super) struct PostingWeightCursor<'a> {
+    elements: &'a [PostingElementEx],
+    current_index: usize,
+}
+
+impl PostingWeightCursor<'_> {
+    /// Advance the cursor to `point_id` and return its weight if present.
+    ///
+    /// The cursor is advanced so that subsequent calls with higher IDs
+    /// only search the remaining (unconsumed) portion of the list.
+    #[inline]
+    pub(super) fn skip_to(&mut self, point_id: PointOffsetType) -> Option<TokenWeight> {
+        let remaining = &self.elements[self.current_index..];
+        match remaining.binary_search_by_key(&point_id, |e| e.point_id) {
+            Ok(offset) => {
+                self.current_index += offset;
+                Some(self.elements[self.current_index].weight)
+            }
+            Err(offset) => {
+                // Advance past elements that are smaller than point_id
+                self.current_index += offset;
+                None
+            }
         }
     }
 }
