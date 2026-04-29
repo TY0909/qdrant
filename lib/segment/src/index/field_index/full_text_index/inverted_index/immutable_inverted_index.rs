@@ -385,6 +385,254 @@ impl ImmutableInvertedIndex {
 
         Ok(result)
     }
+
+    /// BM25 scoring with filter and pruning for immutable compressed posting lists.
+    ///
+    /// Follows the sparse vector batched search pipeline: iterates posting
+    /// lists in batches, accumulates TF·IDF scores, applies the filter, and
+    /// uses `max_next_weight` to prune the longest posting list when the
+    /// top-k heap is full.
+    pub fn search_text_index<F>(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        if !self.has_weight {
+            return Ok(vec![]);
+        }
+
+        /// Trait to abstract over `WeightInfo` and `WeightInfoAndPositions`.
+        trait HasWeights {
+            fn token_weight(&self) -> f32;
+            fn max_next_weight(&self) -> f32;
+        }
+
+        impl HasWeights for WeightInfo {
+            fn token_weight(&self) -> f32 {
+                WeightInfo::token_weight(self)
+            }
+            fn max_next_weight(&self) -> f32 {
+                WeightInfo::max_next_weight(self)
+            }
+        }
+
+        impl HasWeights for WeightInfoAndPositions {
+            fn token_weight(&self) -> f32 {
+                WeightInfoAndPositions::token_weight(self)
+            }
+            fn max_next_weight(&self) -> f32 {
+                WeightInfoAndPositions::max_next_weight(self)
+            }
+        }
+
+        fn search_inner<V: PostingValue + HasWeights>(
+            postings: &[PostingList<V>],
+            vocab: &HashMap<String, TokenId>,
+            query: &TokenWeightSet,
+            top: usize,
+            filter: impl Fn(PointOffsetType) -> bool,
+        ) -> Vec<ScoredPointOffset> {
+            struct IndexedIterator<'a, V: PostingValue> {
+                iter: PostingIterator<'a, V>,
+                idf: f32,
+            }
+
+            let mut iterators: Vec<IndexedIterator<'_, V>> = query
+                .tokens
+                .iter()
+                .zip(query.idfs.iter())
+                .filter_map(|(token, &idf)| {
+                    let tid = *vocab.get(token.as_str())?;
+                    let iter = postings.get(tid as usize)?.iter();
+                    Some(IndexedIterator { iter, idf })
+                })
+                .collect();
+
+            if iterators.is_empty() {
+                return vec![];
+            }
+
+            let mut top_k = TopK::new(top);
+
+            // Find global min/max point IDs.
+            let mut min_id = PointOffsetType::MAX;
+            let mut max_id: PointOffsetType = 0;
+            // Get max_id from posting list views before creating iterators
+            for (token, _) in query.tokens.iter().zip(query.idfs.iter()) {
+                if let Some(tid) = vocab.get(token.as_str()) {
+                    if let Some(posting) = postings.get(*tid as usize) {
+                        if let Some(last_id) = posting.view().get_last_id() {
+                            max_id = max_id.max(last_id);
+                        }
+                    }
+                }
+            }
+            for ii in &mut iterators {
+                if let Some(elem) = ii.iter.advance_until_greater_or_equal(0) {
+                    min_id = min_id.min(elem.id);
+                }
+            }
+
+            if min_id > max_id {
+                return vec![];
+            }
+
+            const BATCH_SIZE: u32 = 10_000;
+            let mut batch_start = min_id;
+            let mut best_min_score = f32::MIN;
+
+            loop {
+                if batch_start > max_id {
+                    break;
+                }
+                let batch_last = batch_start.saturating_add(BATCH_SIZE).min(max_id);
+
+                // ── batch accumulation ──
+                let batch_len = (batch_last - batch_start + 1) as usize;
+                let mut scores = vec![0.0f32; batch_len];
+
+                for ii in iterators.iter_mut() {
+                    // Advance through elements up to batch_last
+                    loop {
+                        let Some(elem) = ii.iter.advance_until_greater_or_equal(batch_start) else {
+                            break;
+                        };
+                        if elem.id > batch_last {
+                            break;
+                        }
+                        let local = (elem.id - batch_start) as usize;
+                        scores[local] += elem.value.token_weight() * ii.idf;
+                        // Advance past current element
+                        ii.iter.next();
+                    }
+                }
+
+                // ── publish scored points ──
+                for (local, &score) in scores.iter().enumerate() {
+                    if score > 0.0 && score > top_k.threshold() {
+                        let point_id = batch_start + local as PointOffsetType;
+                        if filter(point_id) {
+                            top_k.push(ScoredPointOffset {
+                                idx: point_id,
+                                score,
+                            });
+                        }
+                    }
+                }
+
+                // ── remove exhausted iterators ──
+                iterators.retain(|ii| ii.iter.len() > 0);
+
+                if iterators.is_empty() {
+                    break;
+                }
+
+                // Fast-path: single iterator left
+                if iterators.len() == 1 {
+                    let ii = &mut iterators[0];
+                    for elem in ii.iter.by_ref() {
+                        if filter(elem.id) {
+                            let score = elem.value.token_weight() * ii.idf;
+                            top_k.push(ScoredPointOffset {
+                                idx: elem.id,
+                                score,
+                            });
+                        }
+                    }
+                    break;
+                }
+
+                // ── pruning with max_next_weight ──
+                if top_k.len() >= top {
+                    let new_min_score = top_k.threshold();
+                    if new_min_score > best_min_score {
+                        best_min_score = new_min_score;
+
+                        // Promote longest iterator to front
+                        let longest_idx = iterators
+                            .iter()
+                            .enumerate()
+                            .max_by_key(|(_, ii)| ii.iter.len())
+                            .map(|(i, _)| i)
+                            .unwrap();
+                        if longest_idx != 0 {
+                            iterators.swap(0, longest_idx);
+                        }
+
+                        // Try pruning the longest iterator
+                        if let Some(elem) = iterators[0]
+                            .iter
+                            .advance_until_greater_or_equal(batch_start)
+                        {
+                            let next_min_in_others = iterators[1..]
+                                .iter_mut()
+                                .filter_map(|ii| {
+                                    ii.iter
+                                        .advance_until_greater_or_equal(batch_start)
+                                        .map(|e| e.id)
+                                })
+                                .min();
+
+                            let can_prune = match next_min_in_others {
+                                Some(next_min) if next_min > elem.id => {
+                                    let max_weight =
+                                        elem.value.token_weight().max(elem.value.max_next_weight());
+                                    max_weight * iterators[0].idf <= new_min_score
+                                }
+                                None => {
+                                    let max_weight =
+                                        elem.value.token_weight().max(elem.value.max_next_weight());
+                                    max_weight * iterators[0].idf <= new_min_score
+                                }
+                                _ => false,
+                            };
+
+                            if can_prune {
+                                match next_min_in_others {
+                                    Some(next_min) => {
+                                        iterators[0].iter.advance_until_greater_or_equal(next_min);
+                                    }
+                                    None => {
+                                        // Exhaust the iterator
+                                        for _ in iterators[0].iter.by_ref() {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Update batch_start from remaining iterators
+                batch_start = iterators
+                    .iter_mut()
+                    .filter_map(|ii| {
+                        ii.iter
+                            .advance_until_greater_or_equal(batch_start)
+                            .map(|e| e.id)
+                    })
+                    .min()
+                    .unwrap_or(max_id + 1);
+            }
+
+            top_k.into_vec()
+        }
+
+        let result = match &self.postings {
+            ImmutablePostings::WithWeight(postings) => {
+                search_inner(postings, &self.vocab, query, top, filter)
+            }
+            ImmutablePostings::WithWeightAndPositions(postings) => {
+                search_inner(postings, &self.vocab, query, top, filter)
+            }
+            ImmutablePostings::Ids(_) | ImmutablePostings::WithPositions(_) => vec![],
+        };
+
+        Ok(result)
+    }
 }
 
 impl InvertedIndex for ImmutableInvertedIndex {

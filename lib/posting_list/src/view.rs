@@ -208,6 +208,11 @@ impl<'a, V: PostingValue> PostingListView<'a, V> {
         self.chunks.len() * CHUNK_LEN + self.remainders.len()
     }
 
+    /// Returns the last id in the posting list, or `None` if empty.
+    pub fn get_last_id(&self) -> Option<PointOffsetType> {
+        self.last_id
+    }
+
     /// Checks if there are no elements in the posting list.
     pub fn is_empty(&self) -> bool {
         self.len() == 0

@@ -9,7 +9,7 @@ use common::stored_bitslice::MmapBitSlice;
 use common::top_k::TopK;
 use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::{MmapFile, OpenOptions};
-use posting_list::PostingIterator;
+use posting_list::{PostingIterator, PostingValue};
 use types::ZerocopyPostingValue;
 use uio_postings::UniversalPostings;
 
@@ -633,6 +633,259 @@ impl MmapInvertedIndex {
                 |w| w.token_weight(),
             ),
             // ID-only or position-only postings have no weights
+            MmapPostingsEnum::Ids(_) | MmapPostingsEnum::WithPositions(_) => Ok(vec![]),
+        }
+    }
+
+    /// BM25 scoring with filter and pruning for mmap-backed posting lists.
+    ///
+    /// Follows the sparse vector batched search pipeline: iterates posting
+    /// lists in batches, accumulates TF·IDF scores, applies the filter, and
+    /// uses `max_next_weight` to prune the longest posting list.
+    pub fn search_text_index<F>(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        if !self.has_weight {
+            return Ok(vec![]);
+        }
+
+        let token_ids_and_idfs: Vec<(TokenId, f32)> = query
+            .tokens
+            .iter()
+            .zip(query.idfs.iter())
+            .filter_map(|(token, &idf)| {
+                let tid = self
+                    .storage
+                    .vocab
+                    .get(token.as_str())
+                    .ok()
+                    .flatten()
+                    .and_then(<[TokenId]>::first)
+                    .copied()?;
+                Some((tid, idf))
+            })
+            .collect();
+
+        if token_ids_and_idfs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let token_ids: Vec<TokenId> = token_ids_and_idfs.iter().map(|(tid, _)| *tid).collect();
+        let idfs: Vec<f32> = token_ids_and_idfs.iter().map(|(_, idf)| *idf).collect();
+
+        /// Trait to abstract weight extraction for pruning.
+        trait HasWeights {
+            fn token_weight(&self) -> f32;
+            fn max_next_weight(&self) -> f32;
+        }
+
+        impl HasWeights for WeightInfo {
+            fn token_weight(&self) -> f32 {
+                WeightInfo::token_weight(self)
+            }
+            fn max_next_weight(&self) -> f32 {
+                WeightInfo::max_next_weight(self)
+            }
+        }
+
+        impl HasWeights for WeightInfoAndPositions {
+            fn token_weight(&self) -> f32 {
+                WeightInfoAndPositions::token_weight(self)
+            }
+            fn max_next_weight(&self) -> f32 {
+                WeightInfoAndPositions::max_next_weight(self)
+            }
+        }
+
+        fn search_inner<V: ZerocopyPostingValue + HasWeights>(
+            postings: &UniversalPostings<V, MmapFile>,
+            token_ids: &[TokenId],
+            idfs: &[f32],
+            top: usize,
+            filter: impl Fn(PointOffsetType) -> bool,
+        ) -> OperationResult<Vec<ScoredPointOffset>> {
+            postings.with_existing_postings(token_ids, |views| {
+                struct IndexedIterator<'a, V: PostingValue> {
+                    iter: PostingIterator<'a, V>,
+                    idf: f32,
+                }
+
+                let mut iterators: Vec<IndexedIterator<'_, V>> = Vec::with_capacity(views.len());
+                let mut max_id: PointOffsetType = 0;
+                let mut min_id = PointOffsetType::MAX;
+
+                for (token_id, view) in views {
+                    let idf = token_ids
+                        .iter()
+                        .zip(idfs.iter())
+                        .find(|&(&tid, _)| tid == token_id)
+                        .map(|(_, &idf)| idf)
+                        .unwrap_or(0.0);
+
+                    if let Some(last_id) = view.get_last_id() {
+                        max_id = max_id.max(last_id);
+                    }
+
+                    let mut iter = view.into_iter();
+                    if let Some(first) = iter.advance_until_greater_or_equal(0) {
+                        min_id = min_id.min(first.id);
+                    }
+                    iterators.push(IndexedIterator { iter, idf });
+                }
+
+                if iterators.is_empty() || min_id > max_id {
+                    return Ok(vec![]);
+                }
+
+                let mut top_k = TopK::new(top);
+                const BATCH_SIZE: u32 = 10_000;
+                let mut batch_start = min_id;
+                let mut best_min_score = f32::MIN;
+
+                loop {
+                    if batch_start > max_id {
+                        break;
+                    }
+                    let batch_last = batch_start.saturating_add(BATCH_SIZE).min(max_id);
+
+                    let batch_len = (batch_last - batch_start + 1) as usize;
+                    let mut scores = vec![0.0f32; batch_len];
+
+                    for ii in iterators.iter_mut() {
+                        loop {
+                            let Some(elem) = ii.iter.advance_until_greater_or_equal(batch_start)
+                            else {
+                                break;
+                            };
+                            if elem.id > batch_last {
+                                break;
+                            }
+                            let local = (elem.id - batch_start) as usize;
+                            scores[local] += elem.value.token_weight() * ii.idf;
+                            ii.iter.next();
+                        }
+                    }
+
+                    for (local, &score) in scores.iter().enumerate() {
+                        if score > 0.0 && score > top_k.threshold() {
+                            let point_id = batch_start + local as PointOffsetType;
+                            if filter(point_id) {
+                                top_k.push(ScoredPointOffset {
+                                    idx: point_id,
+                                    score,
+                                });
+                            }
+                        }
+                    }
+
+                    iterators.retain(|ii| ii.iter.len() > 0);
+
+                    if iterators.is_empty() {
+                        break;
+                    }
+
+                    if iterators.len() == 1 {
+                        let ii = &mut iterators[0];
+                        for elem in ii.iter.by_ref() {
+                            if filter(elem.id) {
+                                let score = elem.value.token_weight() * ii.idf;
+                                top_k.push(ScoredPointOffset {
+                                    idx: elem.id,
+                                    score,
+                                });
+                            }
+                        }
+                        break;
+                    }
+
+                    if top_k.len() >= top {
+                        let new_min_score = top_k.threshold();
+                        if new_min_score > best_min_score {
+                            best_min_score = new_min_score;
+
+                            let longest_idx = iterators
+                                .iter()
+                                .enumerate()
+                                .max_by_key(|(_, ii)| ii.iter.len())
+                                .map(|(i, _)| i)
+                                .unwrap();
+                            if longest_idx != 0 {
+                                iterators.swap(0, longest_idx);
+                            }
+
+                            if let Some(elem) = iterators[0]
+                                .iter
+                                .advance_until_greater_or_equal(batch_start)
+                            {
+                                let next_min_in_others = iterators[1..]
+                                    .iter_mut()
+                                    .filter_map(|ii| {
+                                        ii.iter
+                                            .advance_until_greater_or_equal(batch_start)
+                                            .map(|e| e.id)
+                                    })
+                                    .min();
+
+                                let can_prune = match next_min_in_others {
+                                    Some(next_min) if next_min > elem.id => {
+                                        let max_weight = elem
+                                            .value
+                                            .token_weight()
+                                            .max(elem.value.max_next_weight());
+                                        max_weight * iterators[0].idf <= new_min_score
+                                    }
+                                    None => {
+                                        let max_weight = elem
+                                            .value
+                                            .token_weight()
+                                            .max(elem.value.max_next_weight());
+                                        max_weight * iterators[0].idf <= new_min_score
+                                    }
+                                    _ => false,
+                                };
+
+                                if can_prune {
+                                    match next_min_in_others {
+                                        Some(next_min) => {
+                                            iterators[0]
+                                                .iter
+                                                .advance_until_greater_or_equal(next_min);
+                                        }
+                                        None => for _ in iterators[0].iter.by_ref() {},
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    batch_start = iterators
+                        .iter_mut()
+                        .filter_map(|ii| {
+                            ii.iter
+                                .advance_until_greater_or_equal(batch_start)
+                                .map(|e| e.id)
+                        })
+                        .min()
+                        .unwrap_or(max_id + 1);
+                }
+
+                Ok(top_k.into_vec())
+            })
+        }
+
+        match &self.storage.postings {
+            MmapPostingsEnum::WithWeight(postings) => {
+                search_inner(postings, &token_ids, &idfs, top, filter)
+            }
+            MmapPostingsEnum::WithWeightAndPositions(postings) => {
+                search_inner(postings, &token_ids, &idfs, top, filter)
+            }
             MmapPostingsEnum::Ids(_) | MmapPostingsEnum::WithPositions(_) => Ok(vec![]),
         }
     }

@@ -279,4 +279,46 @@ impl PostingWeightCursor<'_> {
             }
         }
     }
+
+    /// Peek at the current element without advancing.
+    #[inline]
+    pub(super) fn peek(&self) -> Option<&PostingElementEx> {
+        self.elements.get(self.current_index)
+    }
+
+    /// Returns the last point ID in the underlying posting list.
+    #[inline]
+    pub(super) fn last_point_id(&self) -> Option<PointOffsetType> {
+        self.elements.last().map(|e| e.point_id)
+    }
+
+    /// Number of remaining elements from the current position.
+    #[inline]
+    pub(super) fn len_to_end(&self) -> usize {
+        self.elements.len().saturating_sub(self.current_index)
+    }
+
+    /// Advance cursor past all remaining elements.
+    #[inline]
+    pub(super) fn skip_to_end(&mut self) {
+        self.current_index = self.elements.len();
+    }
+
+    /// Iterate over elements up to and including `last_id`, calling `f` for
+    /// each one. The cursor is left pointing at the first element past `last_id`.
+    #[inline]
+    pub(super) fn for_each_till_id(
+        &mut self,
+        last_id: PointOffsetType,
+        mut f: impl FnMut(PointOffsetType, TokenWeight),
+    ) {
+        while self.current_index < self.elements.len() {
+            let elem = &self.elements[self.current_index];
+            if elem.point_id > last_id {
+                break;
+            }
+            f(elem.point_id, elem.weight);
+            self.current_index += 1;
+        }
+    }
 }

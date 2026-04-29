@@ -165,6 +165,176 @@ impl MutableInvertedIndex {
 
         Ok(top_k.into_vec())
     }
+
+    /// BM25 scoring with filter and pruning, following the sparse vector
+    /// batched search pipeline.
+    ///
+    /// Iterates all posting lists in batches of contiguous point IDs,
+    /// accumulates TF·IDF scores per point, applies the filter, and uses
+    /// `max_next_weight` to prune the longest posting list when the top-k
+    /// heap is full.
+    pub fn search_text_index<F>(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        if !self.has_weight {
+            return Ok(vec![]);
+        }
+
+        struct IndexedCursor<'a> {
+            cursor: PostingWeightCursor<'a>,
+            idf: f32,
+        }
+
+        let mut cursors: Vec<IndexedCursor<'_>> = query
+            .tokens
+            .iter()
+            .zip(query.idfs.iter())
+            .filter_map(|(token, &idf)| {
+                let tid = *self.vocab.get(token.as_str())?;
+                let cursor = self.postings.get(tid as usize)?.weight_cursor()?;
+                Some(IndexedCursor { cursor, idf })
+            })
+            .collect();
+
+        if cursors.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut top_k = TopK::new(top);
+
+        // Find global min / max point IDs across all posting lists.
+        let mut min_id = PointOffsetType::MAX;
+        let mut max_id: PointOffsetType = 0;
+        for ic in &cursors {
+            if let Some(first) = ic.cursor.peek() {
+                min_id = min_id.min(first.point_id());
+            }
+            if let Some(last_id) = ic.cursor.last_point_id() {
+                max_id = max_id.max(last_id);
+            }
+        }
+
+        const BATCH_SIZE: u32 = 10_000;
+        let mut batch_start = min_id;
+        let mut best_min_score = f32::MIN;
+
+        loop {
+            if batch_start > max_id {
+                break;
+            }
+            let batch_last = batch_start.saturating_add(BATCH_SIZE).min(max_id);
+
+            // ── batch accumulation ──
+            let batch_len = (batch_last - batch_start + 1) as usize;
+            // Reusable score buffer indexed by (point_id - batch_start).
+            let mut scores = vec![0.0f32; batch_len];
+
+            for ic in cursors.iter_mut() {
+                ic.cursor.for_each_till_id(batch_last, |id, weight| {
+                    let local = (id - batch_start) as usize;
+                    scores[local] += weight * ic.idf;
+                });
+            }
+
+            // ── publish scored points ──
+            for (local, &score) in scores.iter().enumerate() {
+                if score > 0.0 && score > top_k.threshold() {
+                    let point_id = batch_start + local as PointOffsetType;
+                    if filter(point_id) {
+                        top_k.push(ScoredPointOffset {
+                            idx: point_id,
+                            score,
+                        });
+                    }
+                }
+            }
+
+            // ── remove exhausted cursors ──
+            cursors.retain(|ic| ic.cursor.len_to_end() > 0);
+
+            if cursors.is_empty() {
+                break;
+            }
+
+            // Fast-path: single cursor left
+            if cursors.len() == 1 {
+                let ic = &mut cursors[0];
+                ic.cursor
+                    .for_each_till_id(PointOffsetType::MAX, |id, weight| {
+                        if filter(id) {
+                            let score = weight * ic.idf;
+                            top_k.push(ScoredPointOffset { idx: id, score });
+                        }
+                    });
+                break;
+            }
+
+            // ── pruning with max_next_weight ──
+            if top_k.len() >= top {
+                let new_min_score = top_k.threshold();
+                if new_min_score > best_min_score {
+                    best_min_score = new_min_score;
+
+                    // Promote longest cursor to front
+                    let longest_idx = cursors
+                        .iter()
+                        .enumerate()
+                        .max_by_key(|(_, ic)| ic.cursor.len_to_end())
+                        .map(|(i, _)| i)
+                        .unwrap();
+                    if longest_idx != 0 {
+                        cursors.swap(0, longest_idx);
+                    }
+
+                    // Try pruning the longest cursor
+                    if let Some(elem) = cursors[0].cursor.peek() {
+                        let next_min_in_others = cursors[1..]
+                            .iter()
+                            .filter_map(|ic| ic.cursor.peek().map(|e| e.point_id()))
+                            .min();
+
+                        let can_prune = match next_min_in_others {
+                            Some(next_min) if next_min > elem.point_id() => {
+                                let max_weight = elem.weight().max(elem.max_next_weight());
+                                max_weight * cursors[0].idf <= new_min_score
+                            }
+                            None => {
+                                let max_weight = elem.weight().max(elem.max_next_weight());
+                                max_weight * cursors[0].idf <= new_min_score
+                            }
+                            _ => false,
+                        };
+
+                        if can_prune {
+                            match next_min_in_others {
+                                Some(next_min) => {
+                                    cursors[0].cursor.skip_to(next_min);
+                                }
+                                None => {
+                                    cursors[0].cursor.skip_to_end();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update batch_start from remaining cursors
+            batch_start = cursors
+                .iter()
+                .filter_map(|ic| ic.cursor.peek().map(|e| e.point_id()))
+                .min()
+                .unwrap_or(max_id + 1);
+        }
+
+        Ok(top_k.into_vec())
+    }
 }
 
 impl InvertedIndex for MutableInvertedIndex {

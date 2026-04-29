@@ -68,6 +68,10 @@ impl WeightInfo {
     pub(super) fn token_weight(&self) -> f32 {
         self.token_weight.get()
     }
+
+    pub(super) fn max_next_weight(&self) -> f32 {
+        self.max_next_weight.get()
+    }
 }
 
 impl PostingValue for WeightInfo {
@@ -94,6 +98,10 @@ impl WeightInfoAndPositions {
 
     pub(super) fn token_weight(&self) -> f32 {
         self.token_weight
+    }
+
+    pub(super) fn max_next_weight(&self) -> f32 {
+        self.max_next_weight
     }
 }
 

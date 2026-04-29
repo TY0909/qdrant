@@ -421,6 +421,28 @@ impl FullTextIndex {
         }
     }
 
+    pub fn search_text_index<F>(
+        &self,
+        query: &TokenWeightSet,
+        top: usize,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        match self {
+            FullTextIndex::Mutable(index) => {
+                index.inverted_index.search_text_index(query, top, filter)
+            }
+            FullTextIndex::Immutable(index) => {
+                index.inverted_index.search_text_index(query, top, filter)
+            }
+            FullTextIndex::Mmap(index) => {
+                index.inverted_index.search_text_index(query, top, filter)
+            }
+        }
+    }
+
     pub fn search_text_index_plain(
         &self,
         query: &TokenWeightSet,
