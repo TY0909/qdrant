@@ -16,8 +16,10 @@ use crate::data_types::build_index_result::BuildFieldIndexResult;
 use crate::data_types::facets::{FacetParams, FacetValue};
 use crate::data_types::named_vectors::NamedVectors;
 use crate::data_types::order_by::{OrderBy, OrderValue};
-use crate::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
-use crate::data_types::segment_record::SegmentRecord;
+use crate::data_types::query_context::{
+    FormulaContext, PayloadTextSearchContext, QueryContext, QueryIdfStats, SegmentQueryContext,
+};
+use crate::data_types::segment_record::{NamedVectorsOwned, SegmentRecord};
 use crate::data_types::vector_name_config::VectorNameConfig;
 use crate::data_types::vectors::{QueryVector, VectorInternal};
 use crate::entry::entry_point::{
@@ -27,6 +29,7 @@ use crate::id_tracker::{IdTracker, IdTrackerRead, PointMappingsGuard};
 use crate::index::field_index::{CardinalityEstimation, FieldIndex};
 use crate::index::{BuildIndexResult, PayloadIndex, PayloadIndexRead};
 use crate::json_path::JsonPath;
+use crate::payload_storage::{FilterContext, PayloadStorage};
 use crate::telemetry::SegmentTelemetry;
 use crate::types::{
     ExtendedPointId, Filter, Payload, PayloadFieldSchema, PayloadKeyType, PayloadKeyTypeRef,
@@ -81,6 +84,53 @@ impl ReadSegmentEntry for Segment {
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<Vec<ScoredPoint>> {
         self.with_view(|view| view.rescore_with_formula(ctx, hw_counter))
+    }
+
+    fn search_payload_text(
+        &self,
+        ctx: Arc<PayloadTextSearchContext>,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        let PayloadTextSearchContext {
+            key,
+            query,
+            filter,
+            top,
+            is_stopped,
+        } = &*ctx;
+
+        let payload_index = self.payload_index.borrow();
+
+        // Find the full text index for the given key
+        let field_indexes = payload_index.field_indexes.get(key);
+        let text_index = field_indexes
+            .and_then(|indexes| indexes.iter().find_map(|idx| idx.as_full_text_index()));
+
+        let Some(text_index) = text_index else {
+            return Ok(vec![]);
+        };
+
+        // Build the filter checker and run search
+        let internal_results = if let Some(filter) = filter {
+            let id_tracker = self.id_tracker.borrow();
+            let filter_context = payload_index.struct_filtered_context(filter, hw_counter)?;
+            text_index.search_text_index(query, *top, |point_id| {
+                !id_tracker.is_deleted_point(point_id) && filter_context.check(point_id)
+            })?
+        } else {
+            let id_tracker = self.id_tracker.borrow();
+            text_index.search_text_index(query, *top, |point_id| {
+                !id_tracker.is_deleted_point(point_id)
+            })?
+        };
+
+        self.process_search_result(
+            internal_results,
+            &false.into(),
+            &false.into(),
+            hw_counter,
+            is_stopped,
+        )
     }
 
     fn vector(
@@ -287,6 +337,51 @@ impl ReadSegmentEntry for Segment {
 
     fn fill_query_context(&self, query_context: &mut QueryContext) {
         self.with_view(|view| view.fill_query_context(query_context));
+    }
+
+    fn text_index_tokenize_query(
+        &self,
+        key: &JsonPath,
+        query_str: &str,
+        _hw_counter: &HardwareCounterCell,
+    ) -> Vec<String> {
+        let payload_index = self.payload_index.borrow();
+        let field_indexes = payload_index.field_indexes.get(key);
+        let text_index = field_indexes
+            .and_then(|indexes| indexes.iter().find_map(|idx| idx.as_full_text_index()));
+
+        match text_index {
+            Some(text_index) => text_index.tokenize_query_str(query_str),
+            None => Vec::new(),
+        }
+    }
+
+    fn fill_text_index_idf(
+        &self,
+        key: &JsonPath,
+        tokens: &[String],
+        doc_count: &mut usize,
+        doc_frequencies: &mut [usize],
+        hw_counter: &HardwareCounterCell,
+    ) {
+        let payload_index = self.payload_index.borrow();
+        let field_indexes = payload_index.field_indexes.get(key);
+        let text_index = field_indexes
+            .and_then(|indexes| indexes.iter().find_map(|idx| idx.as_full_text_index()));
+
+        let Some(text_index) = text_index else {
+            return;
+        };
+
+        *doc_count += text_index.points_count();
+
+        for (i, token) in tokens.iter().enumerate() {
+            if let Some(token_id) = text_index.get_token(token, hw_counter) {
+                if let Ok(Some(posting_len)) = text_index.get_posting_len(token_id, hw_counter) {
+                    doc_frequencies[i] += posting_len;
+                }
+            }
+        }
     }
 
     fn point_is_deferred(&self, point_id: PointIdType) -> bool {

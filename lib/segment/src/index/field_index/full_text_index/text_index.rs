@@ -119,7 +119,7 @@ impl FullTextIndex {
         FullTextGridstoreIndexBuilder::new(dir, config)
     }
 
-    pub(super) fn points_count(&self) -> usize {
+    pub fn points_count(&self) -> usize {
         match self {
             Self::Mutable(index) => index.inverted_index.points_count(),
             Self::Immutable(index) => index.inverted_index.points_count(),
@@ -140,6 +140,33 @@ impl FullTextIndex {
         }
     }
 
+    pub fn get_token(&self, token: &str, hw_counter: &HardwareCounterCell) -> Option<TokenId> {
+        let mut result = None;
+        self.for_each_token_id(std::iter::once(((), token)), hw_counter, |(), id| {
+            result = id;
+        })
+        .ok()?;
+        result
+    }
+
+    pub fn get_posting_len(
+        &self,
+        token_id: TokenId,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<usize>> {
+        match self {
+            FullTextIndex::Mutable(index) => {
+                index.inverted_index.get_posting_len(token_id, hw_counter)
+            }
+            FullTextIndex::Immutable(index) => {
+                index.inverted_index.get_posting_len(token_id, hw_counter)
+            }
+            FullTextIndex::Mmap(index) => {
+                index.inverted_index.get_posting_len(token_id, hw_counter)
+            }
+        }
+    }
+
     pub(super) fn filter_query<'a>(
         &'a self,
         query: ParsedQuery,
@@ -152,7 +179,7 @@ impl FullTextIndex {
         }
     }
 
-    fn get_tokenizer(&self) -> &Tokenizer {
+    pub fn get_tokenizer(&self) -> &Tokenizer {
         match self {
             Self::Mutable(index) => &index.tokenizer,
             Self::Immutable(index) => match &index.storage {
@@ -160,6 +187,17 @@ impl FullTextIndex {
             },
             Self::Mmap(index) => &index.tokenizer,
         }
+    }
+
+    pub fn tokenize_query_str(&self, text: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        self.get_tokenizer().tokenize_query(text, |token| {
+            tokens.push(token.to_string());
+        });
+
+        tokens.sort();
+        tokens.dedup();
+        tokens
     }
 
     fn for_each_payload_block(

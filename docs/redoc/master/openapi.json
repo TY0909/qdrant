@@ -16082,6 +16082,9 @@
           },
           {
             "$ref": "#/components/schemas/RelevanceFeedbackQuery"
+          },
+          {
+            "$ref": "#/components/schemas/PayloadQuery"
           }
         ]
       },
@@ -16767,6 +16770,51 @@
           "c": {
             "type": "number",
             "format": "float"
+          }
+        }
+      },
+      "PayloadQuery": {
+        "type": "object",
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/components/schemas/PayloadQueryInterface"
+          }
+        }
+      },
+      "PayloadQueryInterface": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/TextQuery"
+          }
+        ]
+      },
+      "TextQuery": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "$ref": "#/components/schemas/TextQueryInput"
+          }
+        }
+      },
+      "TextQueryInput": {
+        "type": "object",
+        "required": [
+          "key",
+          "query_str"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "query_str": {
+            "type": "string",
+            "minLength": 1
           }
         }
       },

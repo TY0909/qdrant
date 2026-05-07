@@ -11,7 +11,9 @@ use itertools::Itertools;
 use ordered_float::Float;
 use segment::common::operation_error::OperationError;
 use segment::data_types::modifier::Modifier;
-use segment::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
+use segment::data_types::query_context::{
+    FormulaContext, PayloadTextSearchContext, QueryContext, SegmentQueryContext,
+};
 use segment::data_types::vectors::QueryVector;
 use segment::types::{
     Filter, Indexes, PointIdType, ScoredPoint, SearchParams, SegmentConfig, VectorName,
@@ -520,6 +522,66 @@ impl SegmentsSearcher {
         }
 
         // use aggregator with only one "batch"
+        let mut aggregator = BatchResultAggregator::new(std::iter::once(limit));
+        aggregator.update_point_versions(segments_results.iter().flatten());
+        aggregator.update_batch_results(0, segments_results.into_iter().flatten());
+        let top =
+            aggregator.into_topk().into_iter().next().ok_or_else(|| {
+                OperationError::service_error("expected first result of aggregator")
+            })?;
+
+        Ok(top)
+    }
+
+    /// Search the full text index across all segments with pre-computed IDF weights.
+    ///
+    /// Aggregates results from all segments.
+    pub async fn search_payload_query(
+        segments: LockedSegmentHolder,
+        arc_ctx: Arc<PayloadTextSearchContext>,
+        runtime_handle: &Handle,
+        hw_measurement_acc: HwMeasurementAcc,
+        timeout: Duration,
+    ) -> CollectionResult<Vec<ScoredPoint>> {
+        let limit = arc_ctx.top;
+
+        let mut futures = {
+            let segments: Vec<_> = {
+                let Some(segments_guard) = segments.try_read_for(timeout) else {
+                    return Err(CollectionError::timeout(timeout, "search_payload_query"));
+                };
+                segments_guard
+                    .non_appendable_then_appendable_segments()
+                    .collect()
+            };
+
+            segments
+                .into_iter()
+                .map(|segment| {
+                    let handle = runtime_handle.spawn_blocking({
+                        let arc_ctx = arc_ctx.clone();
+                        let hw_counter = hw_measurement_acc.get_counter_cell();
+                        let cpu_utilization = hw_measurement_acc.cpu_utilization();
+                        move || {
+                            cpu_utilization.measure(|| {
+                                segment
+                                    .get()
+                                    .read()
+                                    .search_payload_text(arc_ctx, &hw_counter)
+                            })
+                        }
+                    });
+                    AbortOnDropHandle::new(handle)
+                })
+                .collect::<FuturesUnordered<_>>()
+        };
+
+        let mut segments_results = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.try_next().await? {
+            segments_results.push(result?)
+        }
+
+        // Use aggregator with only one "batch"
         let mut aggregator = BatchResultAggregator::new(std::iter::once(limit));
         aggregator.update_point_versions(segments_results.iter().flatten());
         aggregator.update_batch_results(0, segments_results.into_iter().flatten());

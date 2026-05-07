@@ -32,18 +32,25 @@ use crate::operations::universal_query::shard_query::{
 pub enum FetchedSource {
     Search(usize),
     Scroll(usize),
+    PayloadQuery(usize),
 }
 
 struct PrefetchResults {
     search_results: Mutex<Vec<Vec<ScoredPoint>>>,
     scroll_results: Mutex<Vec<Vec<ScoredPoint>>>,
+    payload_query_results: Mutex<Vec<Vec<ScoredPoint>>>,
 }
 
 impl PrefetchResults {
-    fn new(search_results: Vec<Vec<ScoredPoint>>, scroll_results: Vec<Vec<ScoredPoint>>) -> Self {
+    fn new(
+        search_results: Vec<Vec<ScoredPoint>>,
+        scroll_results: Vec<Vec<ScoredPoint>>,
+        payload_query_results: Vec<Vec<ScoredPoint>>,
+    ) -> Self {
         Self {
             scroll_results: Mutex::new(scroll_results),
             search_results: Mutex::new(search_results),
+            payload_query_results: Mutex::new(payload_query_results),
         }
     }
 
@@ -51,6 +58,11 @@ impl PrefetchResults {
         match element {
             FetchedSource::Search(idx) => self.search_results.lock().get_mut(idx).map(mem::take),
             FetchedSource::Scroll(idx) => self.scroll_results.lock().get_mut(idx).map(mem::take),
+            FetchedSource::PayloadQuery(idx) => self
+                .payload_query_results
+                .lock()
+                .get_mut(idx)
+                .map(mem::take),
         }
         .ok_or_else(|| CollectionError::service_error("Expected a prefetched source to exist"))
     }
@@ -64,31 +76,41 @@ impl LocalShard {
         timeout: Duration,
         hw_counter_acc: HwMeasurementAcc,
     ) -> CollectionResult<Vec<ShardQueryResponse>> {
+        let PlannedQuery {
+            root_plans,
+            searches,
+            scrolls,
+            payload_queries,
+        } = request;
+
         let start_time = std::time::Instant::now();
         let searches_f = self.do_search(
-            Arc::new(CoreSearchRequestBatch {
-                searches: request.searches,
-            }),
+            Arc::new(CoreSearchRequestBatch { searches }),
             search_runtime_handle,
             timeout,
             hw_counter_acc.clone(),
         );
 
         let scrolls_f = self.query_scroll_batch(
-            Arc::new(request.scrolls),
+            Arc::new(scrolls),
             search_runtime_handle,
             timeout,
             hw_counter_acc.clone(),
         );
 
-        // execute both searches and scrolls concurrently
-        let (search_results, scroll_results) = tokio::try_join!(searches_f, scrolls_f)?;
-        let prefetch_holder = PrefetchResults::new(search_results, scroll_results);
+        let payload_queries_f =
+            self.query_payload_batch(Arc::new(payload_queries), timeout, hw_counter_acc.clone());
+
+        // execute searches, scrolls, and payload queries concurrently
+        let (search_results, scroll_results, payload_query_results) =
+            tokio::try_join!(searches_f, scrolls_f, payload_queries_f)?;
+        let prefetch_holder =
+            PrefetchResults::new(search_results, scroll_results, payload_query_results);
 
         // decrease timeout by the time spent so far
         let timeout = timeout.saturating_sub(start_time.elapsed());
 
-        let plans_futures = request.root_plans.into_iter().map(|root_plan| {
+        let plans_futures = root_plans.into_iter().map(|root_plan| {
             self.resolve_plan(
                 root_plan,
                 &prefetch_holder,
@@ -227,6 +249,9 @@ impl LocalShard {
                     }
                     Source::ScrollsIdx(idx) => {
                         sources.push(prefetch_holder.get(FetchedSource::Scroll(idx))?)
+                    }
+                    Source::PayloadQueriesIdx(idx) => {
+                        sources.push(prefetch_holder.get(FetchedSource::PayloadQuery(idx))?)
                     }
                     Source::Prefetch(prefetch) => {
                         let merged = self
@@ -418,7 +443,20 @@ impl LocalShard {
                 )
                 .await
             }
-            ScoringQuery::Payload(payload_query) => todo!(),
+            ScoringQuery::Payload(payload_query) => {
+                // Create a filter from the source point IDs
+                let filter = filter_with_sources_ids(sources.into_iter());
+
+                self.search_with_payload_query(
+                    payload_query,
+                    Some(filter),
+                    limit,
+                    score_threshold.map(OrderedFloat::into_inner),
+                    timeout,
+                    hw_counter_acc,
+                )
+                .await
+            }
         }
     }
 

@@ -30,6 +30,7 @@ impl MergePlan {
             match source {
                 Source::SearchesIdx(_) => {}
                 Source::ScrollsIdx(_) => {}
+                Source::PayloadQueriesIdx(_) => {}
                 Source::Prefetch(nested_plan) => nested_plan.validate()?,
             }
         }

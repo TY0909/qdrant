@@ -4,6 +4,7 @@ use segment::common::operation_error::{OperationError, OperationResult};
 use segment::data_types::vectors::NamedQuery;
 use segment::types::{Filter, SearchParams, WithPayloadInterface, WithVector};
 
+use super::payload_query::QueryPayloadRequestInternal;
 use super::query_enum::QueryEnum;
 use super::scroll::{QueryScrollRequestInternal, ScrollOrder};
 use super::*;
@@ -12,10 +13,10 @@ use crate::search::CoreSearchRequest;
 const MAX_PREFETCH_DEPTH: usize = 64;
 
 /// The planned representation of multiple [ShardQueryRequest]s, which flattens all the
-/// leaf queries into a batch of searches and scrolls.
+/// leaf queries into a batch of searches, scrolls, and payload queries.
 #[derive(Debug, Default)]
 pub struct PlannedQuery {
-    /// References to the searches and scrolls, and how to merge them.
+    /// References to the searches, scrolls, payload queries, and how to merge them.
     /// This retains the recursive structure of the original queries.
     ///
     /// One per each query in the batch
@@ -26,6 +27,9 @@ pub struct PlannedQuery {
 
     /// All the leaf scrolls
     pub scrolls: Vec<QueryScrollRequestInternal>,
+
+    /// All the leaf payload queries
+    pub payload_queries: Vec<QueryPayloadRequestInternal>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -54,6 +58,9 @@ pub enum Source {
 
     /// A reference offset into the scrolls list
     ScrollsIdx(usize),
+
+    /// A reference offset into the payload queries list
+    PayloadQueriesIdx(usize),
 
     /// A nested prefetch
     Prefetch(Box<MergePlan>),
@@ -201,6 +208,7 @@ impl PlannedQuery {
         let sources = vec![leaf_source_from_scoring_query(
             &mut self.searches,
             &mut self.scrolls,
+            &mut self.payload_queries,
             query,
             limit,
             params,
@@ -233,8 +241,13 @@ impl PlannedQuery {
             OperationError::validation_error("cannot have prefetches without a query".to_string())
         })?;
 
-        let sources =
-            recurse_prefetches(&mut self.searches, &mut self.scrolls, prefetches, &filter)?;
+        let sources = recurse_prefetches(
+            &mut self.searches,
+            &mut self.scrolls,
+            &mut self.payload_queries,
+            prefetches,
+            &filter,
+        )?;
 
         let rescore_stages = match rescoring_query {
             ScoringQuery::Mmr(mmr) => {
@@ -301,12 +314,17 @@ impl PlannedQuery {
     pub fn scrolls(&self) -> &Vec<QueryScrollRequestInternal> {
         &self.scrolls
     }
+
+    pub fn payload_queries(&self) -> &Vec<QueryPayloadRequestInternal> {
+        &self.payload_queries
+    }
 }
 
 /// Recursively construct a merge_plan for prefetches
 fn recurse_prefetches(
     core_searches: &mut Vec<CoreSearchRequest>,
     scrolls: &mut Vec<QueryScrollRequestInternal>,
+    payload_queries: &mut Vec<QueryPayloadRequestInternal>,
     prefetches: Vec<ShardPrefetch>,
     propagate_filter: &Option<Filter>, // Global filter to apply to all prefetches
 ) -> OperationResult<Vec<Source>> {
@@ -330,6 +348,7 @@ fn recurse_prefetches(
             leaf_source_from_scoring_query(
                 core_searches,
                 scrolls,
+                payload_queries,
                 query,
                 limit,
                 params,
@@ -338,7 +357,8 @@ fn recurse_prefetches(
             )?
         } else {
             // This has nested prefetches. Recurse into them
-            let inner_sources = recurse_prefetches(core_searches, scrolls, prefetches, &filter)?;
+            let inner_sources =
+                recurse_prefetches(core_searches, scrolls, payload_queries, prefetches, &filter)?;
 
             let rescore = query.ok_or_else(|| {
                 OperationError::validation_error(
@@ -369,10 +389,11 @@ fn recurse_prefetches(
 /// Crafts a "leaf source" from a scoring query. This means that the scoring query
 /// does not act over prefetched points and will be executed over the segments directly.
 ///
-/// Only `Source::SearchesIdx` or `Source::ScrollsIdx` variants are returned.
+/// Only direct source variants are returned here.
 fn leaf_source_from_scoring_query(
     core_searches: &mut Vec<CoreSearchRequest>,
     scrolls: &mut Vec<QueryScrollRequestInternal>,
+    payload_queries: &mut Vec<QueryPayloadRequestInternal>,
     query: Option<ScoringQuery>,
     limit: usize,
     params: Option<SearchParams>,
@@ -459,7 +480,19 @@ fn leaf_source_from_scoring_query(
 
             Source::SearchesIdx(idx)
         }
-        Some(ScoringQuery::Payload(payload_query)) => todo!(),
+        Some(ScoringQuery::Payload(payload_query)) => {
+            let payload_query_request = QueryPayloadRequestInternal {
+                payload_query,
+                filter,
+                score_threshold,
+                limit,
+            };
+
+            let idx = payload_queries.len();
+            payload_queries.push(payload_query_request);
+
+            Source::PayloadQueriesIdx(idx)
+        }
         None => {
             let scroll = QueryScrollRequestInternal {
                 scroll_order: Default::default(),

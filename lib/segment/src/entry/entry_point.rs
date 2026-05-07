@@ -14,7 +14,9 @@ use crate::data_types::build_index_result::BuildFieldIndexResult;
 use crate::data_types::facets::{FacetParams, FacetValue};
 use crate::data_types::named_vectors::NamedVectors;
 use crate::data_types::order_by::{OrderBy, OrderValue};
-use crate::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
+use crate::data_types::query_context::{
+    FormulaContext, PayloadTextSearchContext, QueryContext, SegmentQueryContext,
+};
 use crate::data_types::segment_record::SegmentRecord;
 use crate::data_types::vector_name_config::VectorNameConfig;
 use crate::data_types::vectors::{QueryVector, VectorInternal};
@@ -62,6 +64,13 @@ pub trait ReadSegmentEntry {
     fn rescore_with_formula(
         &self,
         formula_ctx: Arc<FormulaContext>,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Vec<ScoredPoint>>;
+
+    /// Search the full text index for a payload field with pre-computed IDF weights.
+    fn search_payload_text(
+        &self,
+        ctx: Arc<PayloadTextSearchContext>,
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<Vec<ScoredPoint>>;
 
@@ -237,6 +246,26 @@ pub trait ReadSegmentEntry {
     fn get_telemetry_data(&self, detail: TelemetryDetail) -> SegmentTelemetry;
 
     fn fill_query_context(&self, query_context: &mut QueryContext);
+
+    /// Tokenize a query string using the text index's tokenizer for a given field.
+    /// Returns the tokens as strings, or an empty Vec if the field has no text index.
+    fn text_index_tokenize_query(
+        &self,
+        key: &JsonPath,
+        query_str: &str,
+        hw_counter: &HardwareCounterCell,
+    ) -> Vec<String>;
+
+    /// Fill text index IDF statistics for the given tokens.
+    /// Adds this segment's indexed document count and per-token document frequencies.
+    fn fill_text_index_idf(
+        &self,
+        key: &JsonPath,
+        tokens: &[String],
+        doc_count: &mut usize,
+        doc_frequencies: &mut [usize],
+        hw_counter: &HardwareCounterCell,
+    );
 
     /// Check whether the point is marked as deferred in the segment
     fn point_is_deferred(&self, point_id: PointIdType) -> bool;

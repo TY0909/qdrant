@@ -9,12 +9,16 @@ use ordered_float::OrderedFloat;
 use segment::common::operation_error::{OperationError, OperationResult};
 use segment::common::reciprocal_rank_fusion::rrf_scoring;
 use segment::common::score_fusion::{ScoreFusion, score_fusion};
-use segment::data_types::query_context::FormulaContext;
+use segment::data_types::query_context::{FormulaContext, PayloadTextSearchContext};
 use segment::index::query_optimization::rescore_formula::parsed_formula::ParsedFormula;
 use segment::types::{
-    Filter, HasIdCondition, ScoredPoint, WithPayload, WithPayloadInterface, WithVector,
+    Filter, HasIdCondition, ScoredPoint, TokenWeightSet, WithPayload, WithPayloadInterface,
+    WithVector,
 };
 use shard::query::mmr::mmr_from_points_with_vector;
+use shard::query::payload_query::{
+    PayloadQueryInternal, QueryPayloadRequestInternal, TextQueryInternal,
+};
 use shard::query::planned_query::*;
 use shard::query::scroll::{QueryScrollRequestInternal, ScrollOrder};
 use shard::query::*;
@@ -33,6 +37,7 @@ impl EdgeShard {
             root_plans,
             searches,
             scrolls,
+            payload_queries,
         } = planned_query;
 
         let mut search_results = Vec::new();
@@ -45,12 +50,18 @@ impl EdgeShard {
             scroll_results.push(self.query_scroll(scroll)?);
         }
 
+        let mut payload_query_results = Vec::new();
+        for payload_query in &payload_queries {
+            payload_query_results.push(self.query_payload(payload_query)?);
+        }
+
         let mut scored_points_batch = Vec::new();
         for root_plan in root_plans {
             let scored_points = self.resolve_plan(
                 root_plan,
                 &mut search_results,
                 &mut scroll_results,
+                &mut payload_query_results,
                 HwMeasurementAcc::disposable_edge(),
             )?;
 
@@ -74,6 +85,7 @@ impl EdgeShard {
         root_plan: RootPlan,
         search_results: &mut Vec<Vec<ScoredPoint>>,
         scroll_results: &mut Vec<Vec<ScoredPoint>>,
+        payload_query_results: &mut Vec<Vec<ScoredPoint>>,
         hw_measurement_acc: HwMeasurementAcc,
     ) -> OperationResult<Vec<ScoredPoint>> {
         let RootPlan {
@@ -86,6 +98,7 @@ impl EdgeShard {
             merge_plan,
             search_results,
             scroll_results,
+            payload_query_results,
             0,
             hw_measurement_acc.clone(),
         )?;
@@ -112,6 +125,7 @@ impl EdgeShard {
         merge_plan: MergePlan,
         search_results: &mut Vec<Vec<ScoredPoint>>,
         scroll_results: &mut Vec<Vec<ScoredPoint>>,
+        payload_query_results: &mut Vec<Vec<ScoredPoint>>,
         depth: usize,
         hw_counter_acc: HwMeasurementAcc,
     ) -> OperationResult<Vec<ScoredPoint>> {
@@ -134,11 +148,16 @@ impl EdgeShard {
                     sources.push(take_prefetched_source(scroll_results, idx)?)
                 }
 
+                Source::PayloadQueriesIdx(idx) => {
+                    sources.push(take_prefetched_source(payload_query_results, idx)?)
+                }
+
                 Source::Prefetch(merge_plan) => {
                     let merged = self.recurse_prefetch(
                         *merge_plan,
                         search_results,
                         scroll_results,
+                        payload_query_results,
                         depth + 1,
                         hw_counter_acc.clone(),
                     )?;
@@ -271,7 +290,16 @@ impl EdgeShard {
             },
 
             ScoringQuery::Mmr(mmr) => self.mmr_rescore(sources, mmr, limit, hw_counter_acc),
-            ScoringQuery::Payload(payload_query) => todo!(),
+            ScoringQuery::Payload(payload_query) => {
+                let filter = filter_by_point_ids(&sources);
+                self.search_with_payload_query(
+                    payload_query,
+                    Some(filter),
+                    limit,
+                    score_threshold.map(OrderedFloat::into_inner),
+                    hw_counter_acc,
+                )
+            }
         }
     }
 
@@ -399,6 +427,160 @@ impl EdgeShard {
         }
 
         Ok(top_mmr)
+    }
+
+    fn query_payload(
+        &self,
+        request: &QueryPayloadRequestInternal,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        let QueryPayloadRequestInternal {
+            payload_query,
+            filter,
+            score_threshold,
+            limit,
+        } = request;
+
+        self.search_with_payload_query(
+            payload_query.clone(),
+            filter.clone(),
+            *limit,
+            *score_threshold,
+            HwMeasurementAcc::disposable_edge(),
+        )
+    }
+
+    fn search_with_payload_query(
+        &self,
+        payload_query: PayloadQueryInternal,
+        filter: Option<Filter>,
+        limit: usize,
+        score_threshold: Option<f32>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        match payload_query {
+            PayloadQueryInternal::Text(text_query) => self.search_with_text_query(
+                text_query,
+                filter,
+                limit,
+                score_threshold,
+                hw_measurement_acc,
+            ),
+        }
+    }
+
+    fn search_with_text_query(
+        &self,
+        text_query: TextQueryInternal,
+        filter: Option<Filter>,
+        limit: usize,
+        score_threshold: Option<f32>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        let TextQueryInternal { key, query_str } = text_query;
+        let hw_counter = hw_measurement_acc.get_counter_cell();
+
+        // Collect segments
+        let segments: Vec<_> = self
+            .segments
+            .read()
+            .non_appendable_then_appendable_segments()
+            .collect();
+
+        if segments.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Tokenize query using first available text index
+        let mut tokens: Vec<String> = Vec::new();
+        for segment in &segments {
+            let segment_read = segment.get().read();
+            let result = segment_read.text_index_tokenize_query(&key, &query_str, &hw_counter);
+            if !result.is_empty() {
+                tokens = result;
+                break;
+            }
+        }
+
+        // Deduplicate tokens - each unique token contributes once to the score,
+        // matching the sparse vector behavior where each dimension appears once.
+        tokens.sort();
+        tokens.dedup();
+
+        if tokens.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Gather IDF stats across all segments
+        let mut total_doc_count: usize = 0;
+        let mut doc_frequencies: Vec<usize> = vec![0; tokens.len()];
+
+        for segment in &segments {
+            let segment_read = segment.get().read();
+            segment_read.fill_text_index_idf(
+                &key,
+                &tokens,
+                &mut total_doc_count,
+                &mut doc_frequencies,
+                &hw_counter,
+            );
+        }
+
+        if total_doc_count == 0 {
+            return Ok(vec![]);
+        }
+
+        // Compute IDF weights
+        let n = total_doc_count as f32;
+        let idfs: Vec<f32> = doc_frequencies
+            .iter()
+            .map(|&df| {
+                let df = df as f32;
+                ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+            })
+            .collect();
+
+        let token_weight_set = TokenWeightSet { tokens, idfs };
+
+        let ctx = PayloadTextSearchContext {
+            key,
+            query: token_weight_set,
+            filter,
+            top: limit,
+            is_stopped: Arc::new(AtomicBool::new(false)),
+        };
+
+        let ctx = Arc::new(ctx);
+
+        // Search each segment
+        let mut all_results = Vec::new();
+        for segment in &segments {
+            let results = segment
+                .get()
+                .read()
+                .search_payload_text(ctx.clone(), &hw_counter)?;
+            all_results.push(results);
+        }
+
+        // Aggregate results
+        let mut aggregator = BatchResultAggregator::new(std::iter::once(limit));
+        aggregator.update_point_versions(all_results.iter().flatten());
+        aggregator.update_batch_results(0, all_results.into_iter().flatten());
+
+        let top =
+            aggregator.into_topk().into_iter().next().ok_or_else(|| {
+                OperationError::service_error("expected first result of aggregator")
+            })?;
+
+        // Apply score threshold (BM25 scores are always positive, higher is better)
+        let top = if let Some(threshold) = score_threshold {
+            top.into_iter()
+                .filter(|point| point.score >= threshold)
+                .collect()
+        } else {
+            top
+        };
+
+        Ok(top)
     }
 
     /// This function always filters deferred points.

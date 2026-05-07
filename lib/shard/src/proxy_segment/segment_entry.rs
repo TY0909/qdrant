@@ -13,7 +13,9 @@ use segment::data_types::build_index_result::BuildFieldIndexResult;
 use segment::data_types::facets::{FacetParams, FacetValue};
 use segment::data_types::named_vectors::NamedVectors;
 use segment::data_types::order_by::OrderValue;
-use segment::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
+use segment::data_types::query_context::{
+    FormulaContext, PayloadTextSearchContext, QueryContext, SegmentQueryContext,
+};
 use segment::data_types::segment_record::SegmentRecord;
 use segment::data_types::vector_name_config::VectorNameConfig;
 use segment::data_types::vectors::{QueryVector, VectorInternal};
@@ -152,6 +154,31 @@ impl ReadSegmentEntry for ProxySegment {
             .get()
             .read()
             .rescore_with_formula(formula_ctx, hw_counter)?;
+
+        let result = {
+            if self.deleted_points.is_empty() {
+                wrapped_results
+            } else {
+                wrapped_results
+                    .into_iter()
+                    .filter(|point| !self.deleted_points.contains_key(&point.id))
+                    .collect()
+            }
+        };
+
+        Ok(result)
+    }
+
+    fn search_payload_text(
+        &self,
+        ctx: Arc<PayloadTextSearchContext>,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        let wrapped_results = self
+            .wrapped_segment
+            .get()
+            .read()
+            .search_payload_text(ctx, hw_counter)?;
 
         let result = {
             if self.deleted_points.is_empty() {
@@ -686,6 +713,35 @@ impl ReadSegmentEntry for ProxySegment {
             .get()
             .read()
             .fill_query_context(query_context)
+    }
+
+    fn text_index_tokenize_query(
+        &self,
+        key: &JsonPath,
+        query_str: &str,
+        hw_counter: &HardwareCounterCell,
+    ) -> Vec<String> {
+        self.wrapped_segment
+            .get()
+            .read()
+            .text_index_tokenize_query(key, query_str, hw_counter)
+    }
+
+    fn fill_text_index_idf(
+        &self,
+        key: &JsonPath,
+        tokens: &[String],
+        doc_count: &mut usize,
+        doc_frequencies: &mut [usize],
+        hw_counter: &HardwareCounterCell,
+    ) {
+        self.wrapped_segment.get().read().fill_text_index_idf(
+            key,
+            tokens,
+            doc_count,
+            doc_frequencies,
+            hw_counter,
+        )
     }
 
     fn point_is_deferred(&self, point_id: PointIdType) -> bool {

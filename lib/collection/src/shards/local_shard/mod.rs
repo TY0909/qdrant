@@ -2,6 +2,7 @@ pub mod clock_map;
 pub mod disk_usage_watcher;
 pub(super) mod facet;
 pub(super) mod formula_rescore;
+pub(super) mod payload_query;
 pub(super) mod query;
 pub(super) mod scroll;
 pub(super) mod search;

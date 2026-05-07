@@ -284,4 +284,11 @@ impl FieldIndex {
             FieldIndex::NullIndex(index) => index.get_storage_type(),
         }
     }
+
+    pub fn as_full_text_index(&self) -> Option<&FullTextIndex> {
+        match self {
+            FieldIndex::FullTextIndex(index) => Some(index),
+            _ => None,
+        }
+    }
 }

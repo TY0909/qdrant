@@ -7,6 +7,7 @@ use segment::json_path::JsonPath;
 use segment::types::*;
 use sparse::common::sparse_vector::SparseVector;
 
+use super::payload_query::{PayloadQueryInternal, QueryPayloadRequestInternal, TextQueryInternal};
 use super::planned_query::*;
 use super::*;
 
@@ -167,6 +168,53 @@ fn test_try_from_no_prefetch() {
             with_vector: WithVector::Bool(true),
             merge_plan: MergePlan {
                 sources: vec![Source::SearchesIdx(0)],
+                rescore_stages: None,
+            },
+        }]
+    );
+}
+
+#[test]
+fn test_try_from_payload_query() {
+    let payload_query = PayloadQueryInternal::Text(TextQueryInternal {
+        key: JsonPath::try_from("text").unwrap(),
+        query_str: "hello world".to_string(),
+    });
+    let filter = Filter::default();
+
+    let request = ShardQueryRequest {
+        prefetches: vec![],
+        query: Some(ScoringQuery::Payload(payload_query.clone())),
+        filter: Some(filter.clone()),
+        score_threshold: Some(OrderedFloat(0.5)),
+        limit: 10,
+        offset: 12,
+        params: Some(SearchParams::default()),
+        with_vector: WithVector::Bool(true),
+        with_payload: WithPayloadInterface::Bool(true),
+    };
+
+    let planned_query = PlannedQuery::try_from(vec![request]).unwrap();
+
+    assert!(planned_query.searches.is_empty());
+    assert!(planned_query.scrolls.is_empty());
+    assert_eq!(
+        planned_query.payload_queries,
+        vec![QueryPayloadRequestInternal {
+            payload_query,
+            filter: Some(filter),
+            score_threshold: Some(0.5),
+            limit: 22,
+        }]
+    );
+
+    assert_eq!(
+        planned_query.root_plans,
+        vec![RootPlan {
+            with_payload: WithPayloadInterface::Bool(true),
+            with_vector: WithVector::Bool(true),
+            merge_plan: MergePlan {
+                sources: vec![Source::PayloadQueriesIdx(0)],
                 rescore_stages: None,
             },
         }]

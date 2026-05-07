@@ -11,7 +11,8 @@ use sparse::common::types::{DimId, DimWeight};
 
 use crate::data_types::tiny_map;
 use crate::index::query_optimization::rescore_formula::parsed_formula::ParsedFormula;
-use crate::types::{ScoredPoint, VectorName, VectorNameBuf};
+use crate::json_path::JsonPath;
+use crate::types::{Filter, ScoredPoint, TokenWeightSet, VectorName, VectorNameBuf};
 
 #[derive(Debug, Default)]
 pub struct QueryIdfStats {
@@ -275,5 +276,14 @@ pub struct FormulaContext {
     pub prefetches_results: Vec<Vec<ScoredPoint>>,
     pub limit: usize,
     pub score_threshold: Option<ScoreType>,
+    pub is_stopped: Arc<AtomicBool>,
+}
+
+/// Context for payload text search across segments.
+pub struct PayloadTextSearchContext {
+    pub key: JsonPath,
+    pub query: TokenWeightSet,
+    pub filter: Option<Filter>,
+    pub top: usize,
     pub is_stopped: Arc<AtomicBool>,
 }
