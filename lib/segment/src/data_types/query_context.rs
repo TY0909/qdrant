@@ -280,6 +280,7 @@ pub struct FormulaContext {
 }
 
 /// Context for payload text search across segments.
+#[derive(Clone)]
 pub struct PayloadTextSearchContext {
     pub key: JsonPath,
     pub query: TokenWeightSet,

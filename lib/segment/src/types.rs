@@ -1851,6 +1851,13 @@ pub const DEFAULT_FULL_SCAN_THRESHOLD: usize = 10_000;
 
 pub const DEFAULT_SPARSE_FULL_SCAN_THRESHOLD: usize = 5_000;
 
+/// Dedicated full-scan threshold for payload text queries.
+///
+/// Payload text plain search cost grows with both the number of filtered points
+/// and the number of unique query tokens, so we keep this lower than the sparse
+/// vector default for now.
+pub const DEFAULT_PAYLOAD_TEXT_FULL_SCAN_THRESHOLD: usize = 1_000;
+
 /// Persistable state of segment configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -4092,6 +4099,7 @@ pub(crate) mod test_utils {
     }
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct TokenWeightSet {
     pub tokens: Vec<String>,
     pub idfs: Vec<f32>,

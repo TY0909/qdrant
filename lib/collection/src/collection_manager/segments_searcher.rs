@@ -47,6 +47,12 @@ type BatchSearchResult = Vec<SegmentBatchSearchResult>;
 // Result of batch search in one segment
 type SegmentSearchExecutedResult = CollectionResult<(SegmentBatchSearchResult, Vec<bool>)>;
 
+#[derive(Clone)]
+pub(crate) struct PreparedPayloadTextSearch {
+    pub ctx: Arc<PayloadTextSearchContext>,
+    pub indexed_points: usize,
+}
+
 /// Simple implementation of segment manager
 ///  - rebuild segment for memory optimization purposes
 #[derive(Default)]
@@ -533,64 +539,143 @@ impl SegmentsSearcher {
         Ok(top)
     }
 
-    /// Search the full text index across all segments with pre-computed IDF weights.
+    /// Search the full text index across all segments for a batch of prepared queries.
     ///
-    /// Aggregates results from all segments.
-    pub async fn search_payload_query(
+    /// This uses one blocking task per segment, amortizes segment lock acquisition across the
+    /// whole batch, and reuses the same sampling / rerun logic as vector search.
+    pub(crate) async fn search_payload_query_batch(
         segments: LockedSegmentHolder,
-        arc_ctx: Arc<PayloadTextSearchContext>,
+        prepared_queries: Arc<Vec<PreparedPayloadTextSearch>>,
         runtime_handle: &Handle,
         hw_measurement_acc: HwMeasurementAcc,
         timeout: Duration,
-    ) -> CollectionResult<Vec<ScoredPoint>> {
-        let limit = arc_ctx.top;
+    ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
+        if prepared_queries.is_empty() {
+            return Ok(vec![]);
+        }
 
-        let mut futures = {
+        if prepared_queries
+            .iter()
+            .all(|prepared_query| prepared_query.ctx.query.tokens.is_empty())
+        {
+            return Ok(vec![vec![]; prepared_queries.len()]);
+        }
+
+        let start = Instant::now();
+        let limits: Vec<_> = prepared_queries
+            .iter()
+            .map(|prepared_query| prepared_query.ctx.top)
+            .collect();
+
+        let (locked_segments, searches): (Vec<_>, Vec<_>) = {
             let segments: Vec<_> = {
                 let Some(segments_guard) = segments.try_read_for(timeout) else {
-                    return Err(CollectionError::timeout(timeout, "search_payload_query"));
+                    return Err(CollectionError::timeout(
+                        timeout,
+                        "search_payload_query_batch",
+                    ));
                 };
                 segments_guard
                     .non_appendable_then_appendable_segments()
                     .collect()
             };
 
+            let use_sampling = segments.len() > 1
+                && prepared_queries
+                    .iter()
+                    .any(|prepared_query| prepared_query.indexed_points > 0);
+
             segments
                 .into_iter()
                 .map(|segment| {
-                    let handle = runtime_handle.spawn_blocking({
-                        let arc_ctx = arc_ctx.clone();
+                    let prepared_queries = prepared_queries.clone();
+                    let timeout = timeout.saturating_sub(start.elapsed());
+                    let search = runtime_handle.spawn_blocking({
+                        let segment = segment.clone();
                         let hw_counter = hw_measurement_acc.get_counter_cell();
                         let cpu_utilization = hw_measurement_acc.cpu_utilization();
                         move || {
                             cpu_utilization.measure(|| {
-                                segment
-                                    .get()
-                                    .read()
-                                    .search_payload_text(arc_ctx, &hw_counter)
+                                search_payload_queries_in_segment(
+                                    segment,
+                                    prepared_queries,
+                                    use_sampling,
+                                    timeout,
+                                    &hw_counter,
+                                )
+                            })
+                        }
+                    });
+                    (segment, AbortOnDropHandle::new(search))
+                })
+                .unzip()
+        };
+
+        let (all_search_results_per_segment, further_results) =
+            Self::execute_searches(searches).await?;
+
+        let (mut result_aggregator, searches_to_rerun) = Self::process_search_result_step1(
+            all_search_results_per_segment,
+            limits,
+            &further_results,
+        );
+
+        if !searches_to_rerun.is_empty() {
+            let searches_to_rerun: Vec<(SegmentOffset, Vec<BatchOffset>)> =
+                searches_to_rerun.into_iter().collect();
+
+            let secondary_searches: Vec<_> = searches_to_rerun
+                .iter()
+                .map(|(segment_id, batch_ids)| {
+                    let prepared_queries = Arc::new(
+                        batch_ids
+                            .iter()
+                            .map(|batch_id| prepared_queries[*batch_id].clone())
+                            .collect::<Vec<_>>(),
+                    );
+                    let segment = locked_segments[*segment_id].clone();
+                    let timeout = timeout.saturating_sub(start.elapsed());
+                    let handle = runtime_handle.spawn_blocking({
+                        let hw_counter = hw_measurement_acc.get_counter_cell();
+                        let cpu_utilization = hw_measurement_acc.cpu_utilization();
+                        move || {
+                            cpu_utilization.measure(|| {
+                                search_payload_queries_in_segment(
+                                    segment,
+                                    prepared_queries,
+                                    false,
+                                    timeout,
+                                    &hw_counter,
+                                )
                             })
                         }
                     });
                     AbortOnDropHandle::new(handle)
                 })
-                .collect::<FuturesUnordered<_>>()
-        };
+                .collect();
 
-        let mut segments_results = Vec::with_capacity(futures.len());
-        while let Some(result) = futures.try_next().await? {
-            segments_results.push(result?)
+            let (secondary_search_results_per_segment, _) =
+                Self::execute_searches(secondary_searches).await?;
+
+            result_aggregator.update_point_versions(
+                secondary_search_results_per_segment
+                    .iter()
+                    .flatten()
+                    .flatten(),
+            );
+
+            for ((_segment_id, batch_ids), segments_result) in searches_to_rerun
+                .into_iter()
+                .zip(secondary_search_results_per_segment)
+            {
+                for (batch_id, secondary_batch_result) in batch_ids.into_iter().zip(segments_result)
+                {
+                    result_aggregator.update_batch_results(batch_id, secondary_batch_result);
+                }
+            }
         }
 
-        // Use aggregator with only one "batch"
-        let mut aggregator = BatchResultAggregator::new(std::iter::once(limit));
-        aggregator.update_point_versions(segments_results.iter().flatten());
-        aggregator.update_batch_results(0, segments_results.into_iter().flatten());
-        let top =
-            aggregator.into_topk().into_iter().next().ok_or_else(|| {
-                OperationError::service_error("expected first result of aggregator")
-            })?;
-
-        Ok(top)
+        Ok(result_aggregator.into_topk())
     }
 }
 
@@ -658,6 +743,87 @@ fn sampling_limit(
 fn effective_limit(limit: usize, ef_limit: usize, poisson_sampling: usize) -> usize {
     // Prefer the highest of poisson_sampling/ef_limit, but never be higher than limit
     poisson_sampling.max(ef_limit).min(limit)
+}
+
+fn payload_sampling_limit(limit: usize, segment_points: usize, total_points: usize) -> usize {
+    if limit == 0 || segment_points == 0 || total_points == 0 {
+        return 0;
+    }
+
+    let segment_probability = segment_points as f64 / total_points as f64;
+    let poisson_sampling =
+        find_search_sampling_over_point_distribution(limit as f64, segment_probability);
+    let effective = poisson_sampling.max(1).min(limit);
+    log::trace!(
+        "payload sampling: {effective}, poisson: {poisson_sampling} segment_probability: {segment_probability}, segment_points: {segment_points}, total_points: {total_points}",
+    );
+    effective
+}
+
+fn search_payload_queries_in_segment(
+    segment: LockedSegment,
+    prepared_queries: Arc<Vec<PreparedPayloadTextSearch>>,
+    use_sampling: bool,
+    timeout: Duration,
+    hw_counter: &common::counter::hardware_counter::HardwareCounterCell,
+) -> SegmentSearchExecutedResult {
+    let Some(read_segment) = segment.get().try_read_for(timeout) else {
+        return Err(CollectionError::timeout(
+            timeout,
+            "search_payload_query_batch_in_segment",
+        ));
+    };
+
+    let segment_points = read_segment.available_point_count_without_deferred();
+    let mut results = Vec::with_capacity(prepared_queries.len());
+    let mut further_results = Vec::with_capacity(prepared_queries.len());
+
+    for prepared_query in prepared_queries.iter() {
+        if prepared_query
+            .ctx
+            .is_stopped
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(CollectionError::cancelled(
+                "Payload query batch search was cancelled",
+            ));
+        }
+
+        let sampled_top = if use_sampling {
+            payload_sampling_limit(
+                prepared_query.ctx.top,
+                segment_points.min(prepared_query.indexed_points),
+                prepared_query.indexed_points,
+            )
+        } else {
+            prepared_query.ctx.top
+        };
+
+        if sampled_top == 0 || prepared_query.ctx.query.tokens.is_empty() {
+            results.push(vec![]);
+            further_results.push(false);
+            continue;
+        }
+
+        let ctx = if sampled_top == prepared_query.ctx.top {
+            prepared_query.ctx.clone()
+        } else {
+            Arc::new(PayloadTextSearchContext {
+                top: sampled_top,
+                ..prepared_query.ctx.as_ref().clone()
+            })
+        };
+
+        let segment_result = read_segment.search_payload_text(ctx, hw_counter)?;
+        let have_further_results = use_sampling
+            && sampled_top < prepared_query.ctx.top
+            && segment_result.len() == sampled_top;
+
+        results.push(segment_result);
+        further_results.push(have_further_results);
+    }
+
+    Ok((results, further_results))
 }
 
 /// Process sequentially contiguous batches

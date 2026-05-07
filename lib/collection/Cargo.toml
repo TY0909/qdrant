@@ -109,3 +109,7 @@ harness = false
 [[bench]]
 name = "batch_query_bench"
 harness = false
+
+[[bench]]
+name = "payload_query_bench"
+harness = false

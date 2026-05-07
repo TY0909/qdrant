@@ -32,7 +32,7 @@ use crate::json_path::JsonPath;
 use crate::payload_storage::{FilterContext, PayloadStorage};
 use crate::telemetry::SegmentTelemetry;
 use crate::types::{
-    DEFAULT_SPARSE_FULL_SCAN_THRESHOLD, ExtendedPointId, Filter, Payload, PayloadFieldSchema,
+    DEFAULT_PAYLOAD_TEXT_FULL_SCAN_THRESHOLD, ExtendedPointId, Filter, Payload, PayloadFieldSchema,
     PayloadIndexInfo, PayloadKeyType, PayloadKeyTypeRef, PointIdType, ScoredPoint, SearchParams,
     SegmentConfig, SegmentInfo, SegmentType, SeqNumberType, VectorDataInfo, VectorName,
     VectorNameBuf, WithPayload, WithVector,
@@ -100,10 +100,16 @@ impl ReadSegmentEntry for Segment {
             is_stopped,
         } = &*ctx;
 
+        if *top == 0 || query.tokens.is_empty() {
+            return Ok(vec![]);
+        }
+
+        check_stopped(is_stopped)?;
+
         let use_plain_filtered_search = match filter {
             Some(filter) => {
                 let query_cardinality = self.estimate_point_count(Some(filter), hw_counter)?;
-                query_cardinality.max < DEFAULT_SPARSE_FULL_SCAN_THRESHOLD
+                query_cardinality.max < DEFAULT_PAYLOAD_TEXT_FULL_SCAN_THRESHOLD
             }
             None => false,
         };

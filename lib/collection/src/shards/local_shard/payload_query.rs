@@ -1,9 +1,10 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::Ordering::Relaxed;
+use std::time::{Duration, Instant};
 
+use ahash::AHashMap;
 use common::counter::hardware_accumulator::HwMeasurementAcc;
 use common::counter::hardware_counter::HardwareCounterCell;
-use futures::future::try_join_all;
 use segment::data_types::query_context::PayloadTextSearchContext;
 use segment::types::{Filter, ScoredPoint, TokenWeightSet};
 use shard::common::stopping_guard::StoppingGuard;
@@ -11,56 +12,38 @@ use shard::query::payload_query::{
     PayloadQueryInternal, QueryPayloadRequestInternal, TextQueryInternal,
 };
 use shard::segment_holder::locked::LockedSegmentHolder;
+use tokio_util::task::AbortOnDropHandle;
 
 use super::LocalShard;
-use crate::collection_manager::segments_searcher::SegmentsSearcher;
+use crate::collection_manager::holders::segment_holder::LockedSegment;
+use crate::collection_manager::segments_searcher::{PreparedPayloadTextSearch, SegmentsSearcher};
 use crate::operations::types::{CollectionError, CollectionResult};
 
+#[derive(Clone)]
+struct PreparedTextQuery {
+    key: segment::json_path::JsonPath,
+    query: TokenWeightSet,
+    indexed_points: usize,
+}
+
+#[derive(Clone)]
+struct PreparedPayloadQueryRequest {
+    search: PreparedPayloadTextSearch,
+    score_threshold: Option<f32>,
+}
+
 impl LocalShard {
-    /// Basic parallel batching for payload queries, used by the universal query API.
     pub(super) async fn query_payload_batch(
         &self,
         batch: Arc<Vec<QueryPayloadRequestInternal>>,
         timeout: Duration,
         hw_measurement_acc: HwMeasurementAcc,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
-        if batch.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let payload_queries = batch
-            .iter()
-            .map(|request| self.query_payload(request, timeout, hw_measurement_acc.clone()));
-
-        let all_payload_results = try_join_all(payload_queries);
-        tokio::time::timeout(timeout, all_payload_results)
+        self.execute_payload_queries(batch.as_ref(), timeout, hw_measurement_acc)
             .await
-            .map_err(|_| CollectionError::timeout(timeout, "Query payload"))?
     }
 
-    async fn query_payload(
-        &self,
-        request: &QueryPayloadRequestInternal,
-        timeout: Duration,
-        hw_measurement_acc: HwMeasurementAcc,
-    ) -> CollectionResult<Vec<ScoredPoint>> {
-        let QueryPayloadRequestInternal {
-            payload_query,
-            filter,
-            score_threshold,
-            limit,
-        } = request;
 
-        self.search_with_payload_query(
-            payload_query.clone(),
-            filter.clone(),
-            *limit,
-            *score_threshold,
-            timeout,
-            hw_measurement_acc,
-        )
-        .await
-    }
 
     pub async fn search_with_payload_query(
         &self,
@@ -71,113 +54,224 @@ impl LocalShard {
         timeout: Duration,
         hw_measurement_acc: HwMeasurementAcc,
     ) -> CollectionResult<Vec<ScoredPoint>> {
-        let stopping_guard = StoppingGuard::new();
+        let request = QueryPayloadRequestInternal {
+            payload_query,
+            filter,
+            score_threshold,
+            limit,
+        };
 
-        match payload_query {
-            PayloadQueryInternal::Text(text_query) => {
-                self.search_with_text_query(
-                    text_query,
-                    filter,
-                    limit,
-                    score_threshold,
-                    timeout,
-                    hw_measurement_acc,
-                    &stopping_guard,
-                )
-                .await
-            }
-        }
+        let mut results = self
+            .execute_payload_queries(std::slice::from_ref(&request), timeout, hw_measurement_acc)
+            .await?;
+
+        Ok(results.pop().unwrap_or_default())
     }
 
-    async fn search_with_text_query(
+    async fn execute_payload_queries(
         &self,
-        text_query: TextQueryInternal,
-        filter: Option<Filter>,
-        limit: usize,
-        score_threshold: Option<f32>,
+        requests: &[QueryPayloadRequestInternal],
         timeout: Duration,
         hw_measurement_acc: HwMeasurementAcc,
-        stopping_guard: &StoppingGuard,
-    ) -> CollectionResult<Vec<ScoredPoint>> {
-        let TextQueryInternal { key, query_str } = text_query;
-
-        // Step 1: Tokenize the query and compute global IDF across all segments.
-        // This follows the same pattern as sparse vector IDF computation.
-        let token_weight_set = Self::compute_text_query_idf(
-            self.segments.clone(),
-            &key,
-            &query_str,
-            &hw_measurement_acc.get_counter_cell(),
-        )?;
-
-        if token_weight_set.tokens.is_empty() {
+    ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
+        if requests.is_empty() {
             return Ok(vec![]);
         }
 
-        // Step 2: Search the text index across all segments with the computed IDF
-        let ctx = PayloadTextSearchContext {
-            key,
-            query: token_weight_set,
-            filter,
-            top: limit,
-            is_stopped: stopping_guard.get_is_stopped(),
-        };
+        let stopping_guard = StoppingGuard::new();
+        let start = Instant::now();
 
-        let arc_ctx = Arc::new(ctx);
+        let prepared_requests = self
+            .prepare_payload_query_requests(
+                requests,
+                timeout,
+                hw_measurement_acc.clone(),
+                &stopping_guard,
+            )
+            .await?;
 
-        let future = SegmentsSearcher::search_payload_query(
-            self.segments.clone(),
-            arc_ctx,
-            &self.search_runtime,
-            hw_measurement_acc,
-            timeout,
+        if prepared_requests.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if prepared_requests
+            .iter()
+            .all(|request| request.search.ctx.query.tokens.is_empty())
+        {
+            return Ok(vec![vec![]; prepared_requests.len()]);
+        }
+
+        let search_timeout = timeout.saturating_sub(start.elapsed());
+        let prepared_searches = Arc::new(
+            prepared_requests
+                .iter()
+                .map(|request| request.search.clone())
+                .collect::<Vec<_>>(),
         );
 
-        let mut res = tokio::time::timeout(timeout, future)
-            .await
-            .map_err(|_elapsed| CollectionError::timeout(timeout, "search_with_payload_query"))??;
+        let future = SegmentsSearcher::search_payload_query_batch(
+            self.segments.clone(),
+            prepared_searches,
+            &self.search_runtime,
+            hw_measurement_acc,
+            search_timeout,
+        );
 
-        // Apply score threshold (BM25 scores are always positive, higher is better)
-        if let Some(threshold) = score_threshold {
-            res.retain(|point| point.score >= threshold);
+        let mut results = tokio::time::timeout(search_timeout, future)
+            .await
+            .map_err(|_| {
+                CollectionError::timeout(search_timeout, "search_payload_query_batch")
+            })??;
+
+        for (result, prepared_request) in results.iter_mut().zip(&prepared_requests) {
+            if let Some(threshold) = prepared_request.score_threshold {
+                result.retain(|point| point.score >= threshold);
+            }
         }
 
-        Ok(res)
+        Ok(results)
     }
 
-    /// Compute IDF weights for query tokens across all segments.
-    ///
-    /// This tokenizes the query string using the text index's tokenizer,
-    /// then gathers document frequency for each token across all segments,
-    /// and computes the global IDF weight for each token.
-    ///
-    /// This mirrors the sparse vector IDF computation pattern.
-    fn compute_text_query_idf(
-        segments: LockedSegmentHolder,
-        key: &segment::json_path::JsonPath,
-        query_str: &str,
-        hw_counter: &HardwareCounterCell,
-    ) -> CollectionResult<TokenWeightSet> {
-        let segments_guard = segments.read();
-
-        let segment_readers: Vec<_> = segments_guard
-            .non_appendable_then_appendable_segments()
-            .collect();
-
-        if segment_readers.is_empty() {
-            return Ok(TokenWeightSet {
-                tokens: vec![],
-                idfs: vec![],
-            });
+    async fn prepare_payload_query_requests(
+        &self,
+        requests: &[QueryPayloadRequestInternal],
+        timeout: Duration,
+        hw_measurement_acc: HwMeasurementAcc,
+        stopping_guard: &StoppingGuard,
+    ) -> CollectionResult<Vec<PreparedPayloadQueryRequest>> {
+        if requests.is_empty() {
+            return Ok(vec![]);
         }
 
-        // Tokenize the query using the first segment's tokenizer.
-        // All segments should share the same index configuration.
-        // `text_index_tokenize_query` already returns sorted, deduplicated tokens,
-        // matching the sparse vector behavior where each dimension appears once.
-        let mut tokens: Vec<String> = Vec::new();
-        for segment in &segment_readers {
-            let segment_read = segment.get().read();
+        let requests_to_prepare = requests.to_vec();
+        let segments = self.segments.clone();
+        let is_stopped = stopping_guard.get_is_stopped().clone();
+        let cpu_utilization = hw_measurement_acc.cpu_utilization();
+        let hw_measurement_acc_clone = hw_measurement_acc.clone();
+
+        let task = AbortOnDropHandle::new(self.search_runtime.spawn_blocking(move || {
+            let hw_counter = hw_measurement_acc_clone.get_counter_cell();
+            cpu_utilization.measure(|| {
+                Self::prepare_payload_query_requests_blocking(
+                    segments,
+                    &requests_to_prepare,
+                    timeout,
+                    &hw_counter,
+                    &is_stopped,
+                )
+            })
+        }));
+
+        let prepared_queries = tokio::time::timeout(timeout, task)
+            .await
+            .map_err(|_| CollectionError::timeout(timeout, "prepare_payload_query_batch"))???;
+
+        let is_stopped = stopping_guard.get_is_stopped();
+        Ok(requests
+            .iter()
+            .zip(prepared_queries)
+            .map(|(request, prepared_query)| PreparedPayloadQueryRequest {
+                search: PreparedPayloadTextSearch {
+                    ctx: Arc::new(PayloadTextSearchContext {
+                        key: prepared_query.key,
+                        query: prepared_query.query,
+                        filter: request.filter.clone(),
+                        top: request.limit,
+                        is_stopped: is_stopped.clone(),
+                    }),
+                    indexed_points: prepared_query.indexed_points,
+                },
+                score_threshold: request.score_threshold,
+            })
+            .collect())
+    }
+
+    fn prepare_payload_query_requests_blocking(
+        segments: LockedSegmentHolder,
+        requests: &[QueryPayloadRequestInternal],
+        timeout: Duration,
+        hw_counter: &HardwareCounterCell,
+        is_stopped: &std::sync::atomic::AtomicBool,
+    ) -> CollectionResult<Vec<PreparedTextQuery>> {
+        let start = Instant::now();
+
+        let segment_readers: Vec<_> = {
+            let Some(segments_guard) = segments.try_read_for(timeout) else {
+                return Err(CollectionError::timeout(
+                    timeout,
+                    "prepare_payload_query_batch",
+                ));
+            };
+            segments_guard
+                .non_appendable_then_appendable_segments()
+                .collect()
+        };
+
+        if segment_readers.is_empty() {
+            return Ok(requests
+                .iter()
+                .map(|request| match &request.payload_query {
+                    PayloadQueryInternal::Text(text_query) => PreparedTextQuery {
+                        key: text_query.key.clone(),
+                        query: TokenWeightSet::default(),
+                        indexed_points: 0,
+                    },
+                })
+                .collect());
+        }
+
+        let mut cache: AHashMap<TextQueryInternal, PreparedTextQuery> = AHashMap::new();
+        let mut prepared_requests = Vec::with_capacity(requests.len());
+
+        for request in requests {
+            if is_stopped.load(Relaxed) {
+                return Err(CollectionError::cancelled(
+                    "prepare_payload_query_batch was cancelled",
+                ));
+            }
+
+            match &request.payload_query {
+                PayloadQueryInternal::Text(text_query) => {
+                    let prepared = if let Some(prepared) = cache.get(text_query) {
+                        prepared.clone()
+                    } else {
+                        let prepared = Self::compute_text_query_idf_from_segments(
+                            &segment_readers,
+                            text_query,
+                            timeout.saturating_sub(start.elapsed()),
+                            hw_counter,
+                        )?;
+                        cache.insert(text_query.clone(), prepared.clone());
+                        prepared
+                    };
+                    prepared_requests.push(prepared);
+                }
+            }
+        }
+
+        Ok(prepared_requests)
+    }
+
+    fn compute_text_query_idf_from_segments(
+        segment_readers: &[LockedSegment],
+        text_query: &TextQueryInternal,
+        timeout: Duration,
+        hw_counter: &HardwareCounterCell,
+    ) -> CollectionResult<PreparedTextQuery> {
+        let start = Instant::now();
+        let TextQueryInternal { key, query_str } = text_query;
+
+        let mut tokens = Vec::new();
+        for segment in segment_readers {
+            let Some(segment_read) = segment
+                .get()
+                .try_read_for(timeout.saturating_sub(start.elapsed()))
+            else {
+                return Err(CollectionError::timeout(
+                    timeout,
+                    "prepare_payload_query_batch",
+                ));
+            };
             let result = segment_read.text_index_tokenize_query(key, query_str, hw_counter);
             if !result.is_empty() {
                 tokens = result;
@@ -186,18 +280,26 @@ impl LocalShard {
         }
 
         if tokens.is_empty() {
-            return Ok(TokenWeightSet {
-                tokens: vec![],
-                idfs: vec![],
+            return Ok(PreparedTextQuery {
+                key: key.clone(),
+                query: TokenWeightSet::default(),
+                indexed_points: 0,
             });
         }
 
-        // Gather document frequency and total document count across all segments
-        let mut total_doc_count: usize = 0;
-        let mut doc_frequencies: Vec<usize> = vec![0; tokens.len()];
+        let mut total_doc_count = 0;
+        let mut doc_frequencies = vec![0; tokens.len()];
 
-        for segment in &segment_readers {
-            let segment_read = segment.get().read();
+        for segment in segment_readers {
+            let Some(segment_read) = segment
+                .get()
+                .try_read_for(timeout.saturating_sub(start.elapsed()))
+            else {
+                return Err(CollectionError::timeout(
+                    timeout,
+                    "prepare_payload_query_batch",
+                ));
+            };
             segment_read.fill_text_index_idf(
                 key,
                 &tokens,
@@ -208,16 +310,15 @@ impl LocalShard {
         }
 
         if total_doc_count == 0 {
-            return Ok(TokenWeightSet {
-                tokens: vec![],
-                idfs: vec![],
+            return Ok(PreparedTextQuery {
+                key: key.clone(),
+                query: TokenWeightSet::default(),
+                indexed_points: 0,
             });
         }
 
-        // Compute IDF using the same formula as sparse vectors:
-        // idf = ln((N - df + 0.5) / (df + 0.5) + 1)
         let n = total_doc_count as f32;
-        let idfs: Vec<f32> = doc_frequencies
+        let idfs = doc_frequencies
             .iter()
             .map(|&df| {
                 let df = df as f32;
@@ -225,6 +326,10 @@ impl LocalShard {
             })
             .collect();
 
-        Ok(TokenWeightSet { tokens, idfs })
+        Ok(PreparedTextQuery {
+            key: key.clone(),
+            query: TokenWeightSet { tokens, idfs },
+            indexed_points: total_doc_count,
+        })
     }
 }

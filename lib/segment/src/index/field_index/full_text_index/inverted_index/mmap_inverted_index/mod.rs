@@ -603,30 +603,23 @@ impl MmapInvertedIndex {
         }
 
         let token_ids: Vec<TokenId> = token_ids_and_idfs.iter().map(|(tid, _)| *tid).collect();
+        let idf_by_token_id: HashMap<TokenId, f32> = token_ids_and_idfs.iter().copied().collect();
 
         /// Generic helper: score prefiltered points using mmap-backed posting
         /// list views. The callback pattern is required by `UniversalPostings`.
         fn score_with_views<V: ZerocopyPostingValue>(
             postings: &UniversalPostings<V, MmapFile>,
             token_ids: &[TokenId],
-            idfs: &[f32],
+            idf_by_token_id: &HashMap<TokenId, f32>,
             top: usize,
             ordered_prefiltered_points: &[PointOffsetType],
             extract_weight: fn(&V) -> f32,
         ) -> OperationResult<Vec<ScoredPointOffset>> {
             postings.with_existing_postings(token_ids, |views| {
-                // Build a map from token_id -> idf for the views we actually got.
-                // `views` may be a subset of requested token_ids if some were missing.
                 let mut iterators: Vec<(PostingIterator<'_, V>, f32)> =
                     Vec::with_capacity(views.len());
                 for (token_id, view) in views {
-                    // Find the idf for this token_id from the original parallel arrays.
-                    let idf = token_ids
-                        .iter()
-                        .zip(idfs.iter())
-                        .find(|&(&tid, _)| tid == token_id)
-                        .map(|(_, &idf)| idf)
-                        .unwrap_or(0.0);
+                    let idf = *idf_by_token_id.get(&token_id).unwrap_or(&0.0);
                     iterators.push((view.into_iter(), idf));
                 }
 
@@ -657,13 +650,11 @@ impl MmapInvertedIndex {
             })
         }
 
-        let idfs: Vec<f32> = token_ids_and_idfs.iter().map(|(_, idf)| *idf).collect();
-
         match &self.storage.postings {
             MmapPostingsEnum::WithWeight(postings) => score_with_views(
                 postings,
                 &token_ids,
-                &idfs,
+                &idf_by_token_id,
                 top,
                 ordered_prefiltered_points,
                 |w| w.token_weight(),
@@ -671,7 +662,7 @@ impl MmapInvertedIndex {
             MmapPostingsEnum::WithWeightAndPositions(postings) => score_with_views(
                 postings,
                 &token_ids,
-                &idfs,
+                &idf_by_token_id,
                 top,
                 ordered_prefiltered_points,
                 |w| w.token_weight(),
@@ -721,7 +712,7 @@ impl MmapInvertedIndex {
         }
 
         let token_ids: Vec<TokenId> = token_ids_and_idfs.iter().map(|(tid, _)| *tid).collect();
-        let idfs: Vec<f32> = token_ids_and_idfs.iter().map(|(_, idf)| *idf).collect();
+        let idf_by_token_id: HashMap<TokenId, f32> = token_ids_and_idfs.iter().copied().collect();
 
         /// Trait to abstract weight extraction for pruning.
         trait HasWeights {
@@ -750,7 +741,7 @@ impl MmapInvertedIndex {
         fn search_inner<V: ZerocopyPostingValue + HasWeights>(
             postings: &UniversalPostings<V, MmapFile>,
             token_ids: &[TokenId],
-            idfs: &[f32],
+            idf_by_token_id: &HashMap<TokenId, f32>,
             top: usize,
             filter: impl Fn(PointOffsetType) -> bool,
         ) -> OperationResult<Vec<ScoredPointOffset>> {
@@ -765,12 +756,7 @@ impl MmapInvertedIndex {
                 let mut min_id = PointOffsetType::MAX;
 
                 for (token_id, view) in views {
-                    let idf = token_ids
-                        .iter()
-                        .zip(idfs.iter())
-                        .find(|&(&tid, _)| tid == token_id)
-                        .map(|(_, &idf)| idf)
-                        .unwrap_or(0.0);
+                    let idf = *idf_by_token_id.get(&token_id).unwrap_or(&0.0);
 
                     if let Some(last_id) = view.get_last_id() {
                         max_id = max_id.max(last_id);
@@ -930,10 +916,10 @@ impl MmapInvertedIndex {
 
         match &self.storage.postings {
             MmapPostingsEnum::WithWeight(postings) => {
-                search_inner(postings, &token_ids, &idfs, top, filter)
+                search_inner(postings, &token_ids, &idf_by_token_id, top, filter)
             }
             MmapPostingsEnum::WithWeightAndPositions(postings) => {
-                search_inner(postings, &token_ids, &idfs, top, filter)
+                search_inner(postings, &token_ids, &idf_by_token_id, top, filter)
             }
             MmapPostingsEnum::Ids(_) | MmapPostingsEnum::WithPositions(_) => Ok(vec![]),
         }
