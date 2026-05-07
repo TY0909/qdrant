@@ -497,9 +497,13 @@ impl ImmutableInvertedIndex {
                 let mut scores = vec![0.0f32; batch_len];
 
                 for ii in iterators.iter_mut() {
-                    // Advance through elements up to batch_last
+                    // Advance through elements up to batch_last. The seek target
+                    // must move forward monotonically, otherwise
+                    // `advance_until_greater_or_equal` may return the same current
+                    // element again within the same batch.
+                    let mut next_id = batch_start;
                     loop {
-                        let Some(elem) = ii.iter.advance_until_greater_or_equal(batch_start) else {
+                        let Some(elem) = ii.iter.advance_until_greater_or_equal(next_id) else {
                             break;
                         };
                         if elem.id > batch_last {
@@ -507,8 +511,10 @@ impl ImmutableInvertedIndex {
                         }
                         let local = (elem.id - batch_start) as usize;
                         scores[local] += elem.value.token_weight() * ii.idf;
-                        // Advance past current element
-                        ii.iter.next();
+                        let Some(next_after_elem) = elem.id.checked_add(1) else {
+                            break;
+                        };
+                        next_id = next_after_elem;
                     }
                 }
 

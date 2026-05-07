@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use common::bitvec::BitVec;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rstest::rstest;
@@ -23,7 +23,7 @@ use crate::index::field_index::full_text_index::text_index::{
 };
 use crate::index::field_index::{FieldIndexBuilderTrait, ValueIndexer};
 use crate::json_path::JsonPath;
-use crate::types::{FieldCondition, ValuesCount};
+use crate::types::{FieldCondition, TokenWeightSet, ValuesCount};
 
 type Database = ();
 
@@ -79,12 +79,14 @@ impl IndexBuilder {
 fn create_builder(
     index_type: IndexType,
     phrase_matching: bool,
+    enable_score: bool,
 ) -> (IndexBuilder, TempDir, Database) {
     let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
     let db = ();
 
     let config = TextIndexParams {
         phrase_matching: Some(phrase_matching),
+        enable_score: Some(enable_score),
         ..TextIndexParams::default()
     };
 
@@ -121,9 +123,11 @@ fn reopen_index(
     #[allow(unused_variables)] db: &Database,
     phrase_matching: bool,
     num_points: usize,
+    enable_score: bool,
 ) -> FullTextIndex {
     let config = TextIndexParams {
         phrase_matching: Some(phrase_matching),
+        enable_score: Some(enable_score),
         ..TextIndexParams::default()
     };
 
@@ -174,7 +178,7 @@ fn build_random_index(
     reopen: bool,
 ) -> (FullTextIndex, TempDir, Database) {
     let mut rnd = StdRng::seed_from_u64(42);
-    let (mut builder, temp_dir, db) = create_builder(index_type, phrase_matching);
+    let (mut builder, temp_dir, db) = create_builder(index_type, phrase_matching, false);
 
     for idx in 0..num_points {
         let keywords = random_full_text_payload(
@@ -215,12 +219,60 @@ fn build_random_index(
             &db,
             phrase_matching,
             num_points,
+            false,
         )
     } else {
         index
     };
 
     (index, temp_dir, db)
+}
+
+fn build_scored_index(
+    index_type: IndexType,
+    phrase_matching: bool,
+    documents: &[&str],
+) -> (FullTextIndex, TempDir, Database) {
+    let (mut builder, temp_dir, db) = create_builder(index_type, phrase_matching, true);
+    let hw_counter = HardwareCounterCell::new();
+
+    for (idx, document) in documents.iter().enumerate() {
+        let payload = Value::String((*document).to_string());
+        builder
+            .add_point(idx as PointOffsetType, &[&payload], &hw_counter)
+            .unwrap();
+    }
+
+    let index = builder.finalize().unwrap();
+    assert_eq!(index.points_count(), documents.len());
+
+    (index, temp_dir, db)
+}
+
+fn normalize_scored_points(
+    mut points: Vec<ScoredPointOffset>,
+) -> Vec<(PointOffsetType, common::types::ScoreType)> {
+    points.sort_by_key(|point| point.idx);
+    points
+        .into_iter()
+        .map(|point| (point.idx, point.score))
+        .collect()
+}
+
+/// Tries to parse a query. If there is an unknown id to a token, returns `None`
+pub fn to_parsed_query(
+    query: &[String],
+    is_phrase: bool,
+    token_to_id: impl Fn(&str) -> Option<TokenId>,
+) -> Option<ParsedQuery> {
+    let tokens = query.iter().map(|token| token_to_id(token.as_str()));
+
+    let parsed = match is_phrase {
+        false => ParsedQuery::AllTokens(tokens.collect::<Option<TokenSet>>()?),
+        true => ParsedQuery::Phrase(tokens.collect::<Option<Document>>()?),
+    };
+
+    Some(parsed)
 }
 
 pub fn parse_query(query: &[String], is_phrase: bool, index: &FullTextIndex) -> ParsedQuery {
@@ -439,6 +491,90 @@ fn test_congruence(
                     .unwrap();
                 assert_eq!(count_a, count_b);
             }
+        }
+    }
+}
+
+#[rstest]
+fn test_score_congruence(#[values(false, true)] phrase_matching: bool) {
+    let documents = [
+        "alpha alpha beta beta beta",
+        "alpha",
+        "beta beta",
+        "alpha beta gamma",
+        "alpha alpha alpha gamma",
+        "beta gamma gamma gamma",
+        "alpha delta",
+        "beta beta delta delta",
+        "gamma delta alpha beta",
+    ];
+
+    let queries = vec![
+        TokenWeightSet {
+            tokens: vec!["alpha".to_string(), "beta".to_string()],
+            idfs: vec![1.7, 0.9],
+        },
+        TokenWeightSet {
+            tokens: vec!["beta".to_string(), "gamma".to_string()],
+            idfs: vec![0.8, 1.6],
+        },
+        TokenWeightSet {
+            tokens: vec![
+                "alpha".to_string(),
+                "delta".to_string(),
+                "gamma".to_string(),
+            ],
+            idfs: vec![2.0, 0.5, 1.3],
+        },
+    ];
+
+    let (indices, _data): (Vec<_>, Vec<_>) = TYPES
+        .iter()
+        .copied()
+        .map(|index_type| {
+            let (index, temp_dir, db) = build_scored_index(index_type, phrase_matching, &documents);
+            ((index, index_type), (temp_dir, db))
+        })
+        .unzip();
+
+    let ordered_prefiltered_points = (0..documents.len() as PointOffsetType).collect::<Vec<_>>();
+    let top = documents.len();
+
+    for query in &queries {
+        let ((first_index, first_type), rest) = indices
+            .split_first()
+            .expect("score congruence test requires at least one index type");
+
+        let expected_batched =
+            normalize_scored_points(first_index.search_text_index(query, top, |_| true).unwrap());
+        let expected_plain = normalize_scored_points(
+            first_index
+                .search_text_index_plain(query, top, &ordered_prefiltered_points)
+                .unwrap(),
+        );
+
+        assert_eq!(
+            expected_batched, expected_plain,
+            "Batched and plain BM25 scores diverged for {first_type:?}",
+        );
+
+        for (index, index_type) in rest {
+            let batched =
+                normalize_scored_points(index.search_text_index(query, top, |_| true).unwrap());
+            let plain = normalize_scored_points(
+                index
+                    .search_text_index_plain(query, top, &ordered_prefiltered_points)
+                    .unwrap(),
+            );
+
+            assert_eq!(
+                batched, plain,
+                "Batched and plain BM25 scores diverged for {index_type:?}",
+            );
+            assert_eq!(
+                batched, expected_batched,
+                "BM25 scores diverged for {index_type:?} compared with {first_type:?}",
+            );
         }
     }
 }
