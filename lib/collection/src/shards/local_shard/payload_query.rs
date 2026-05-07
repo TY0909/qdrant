@@ -173,8 +173,8 @@ impl LocalShard {
 
         // Tokenize the query using the first segment's tokenizer.
         // All segments should share the same index configuration.
-        // Deduplicate tokens to match the sparse vector search_embed behavior,
-        // which uses .unique() on token IDs.
+        // `text_index_tokenize_query` already returns sorted, deduplicated tokens,
+        // matching the sparse vector behavior where each dimension appears once.
         let mut tokens: Vec<String> = Vec::new();
         for segment in &segment_readers {
             let segment_read = segment.get().read();
@@ -184,11 +184,6 @@ impl LocalShard {
                 break;
             }
         }
-
-        // Deduplicate tokens - each unique token contributes once to the score,
-        // matching the sparse vector behavior where each dimension appears once.
-        tokens.sort();
-        tokens.dedup();
 
         if tokens.is_empty() {
             return Ok(TokenWeightSet {

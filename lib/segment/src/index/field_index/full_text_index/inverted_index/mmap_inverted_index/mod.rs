@@ -791,6 +791,7 @@ impl MmapInvertedIndex {
                 const BATCH_SIZE: u32 = 10_000;
                 let mut batch_start = min_id;
                 let mut best_min_score = f32::MIN;
+                let mut scores = vec![0.0f32; BATCH_SIZE as usize + 1];
 
                 loop {
                     if batch_start > max_id {
@@ -799,7 +800,8 @@ impl MmapInvertedIndex {
                     let batch_last = batch_start.saturating_add(BATCH_SIZE).min(max_id);
 
                     let batch_len = (batch_last - batch_start + 1) as usize;
-                    let mut scores = vec![0.0f32; batch_len];
+                    let batch_scores = &mut scores[..batch_len];
+                    batch_scores.fill(0.0);
 
                     for ii in iterators.iter_mut() {
                         let mut next_id = batch_start;
@@ -811,7 +813,7 @@ impl MmapInvertedIndex {
                                 break;
                             }
                             let local = (elem.id - batch_start) as usize;
-                            scores[local] += elem.value.token_weight() * ii.idf;
+                            batch_scores[local] += elem.value.token_weight() * ii.idf;
                             let Some(next_after_elem) = elem.id.checked_add(1) else {
                                 break;
                             };
@@ -819,7 +821,7 @@ impl MmapInvertedIndex {
                         }
                     }
 
-                    for (local, &score) in scores.iter().enumerate() {
+                    for (local, &score) in batch_scores.iter().enumerate() {
                         if score > 0.0 && score > top_k.threshold() {
                             let point_id = batch_start + local as PointOffsetType;
                             if filter(point_id) {

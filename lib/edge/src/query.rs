@@ -490,7 +490,9 @@ impl EdgeShard {
             return Ok(vec![]);
         }
 
-        // Tokenize query using first available text index
+        // Tokenize query using first available text index.
+        // `text_index_tokenize_query` already returns sorted, deduplicated tokens,
+        // matching the sparse vector behavior where each dimension appears once.
         let mut tokens: Vec<String> = Vec::new();
         for segment in &segments {
             let segment_read = segment.get().read();
@@ -500,11 +502,6 @@ impl EdgeShard {
                 break;
             }
         }
-
-        // Deduplicate tokens - each unique token contributes once to the score,
-        // matching the sparse vector behavior where each dimension appears once.
-        tokens.sort();
-        tokens.dedup();
 
         if tokens.is_empty() {
             return Ok(vec![]);

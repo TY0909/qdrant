@@ -223,6 +223,7 @@ impl MutableInvertedIndex {
         const BATCH_SIZE: u32 = 10_000;
         let mut batch_start = min_id;
         let mut best_min_score = f32::MIN;
+        let mut scores = vec![0.0f32; BATCH_SIZE as usize + 1];
 
         loop {
             if batch_start > max_id {
@@ -232,18 +233,18 @@ impl MutableInvertedIndex {
 
             // ── batch accumulation ──
             let batch_len = (batch_last - batch_start + 1) as usize;
-            // Reusable score buffer indexed by (point_id - batch_start).
-            let mut scores = vec![0.0f32; batch_len];
+            let batch_scores = &mut scores[..batch_len];
+            batch_scores.fill(0.0);
 
             for ic in cursors.iter_mut() {
                 ic.cursor.for_each_till_id(batch_last, |id, weight| {
                     let local = (id - batch_start) as usize;
-                    scores[local] += weight * ic.idf;
+                    batch_scores[local] += weight * ic.idf;
                 });
             }
 
             // ── publish scored points ──
-            for (local, &score) in scores.iter().enumerate() {
+            for (local, &score) in batch_scores.iter().enumerate() {
                 if score > 0.0 && score > top_k.threshold() {
                     let point_id = batch_start + local as PointOffsetType;
                     if filter(point_id) {
