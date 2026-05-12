@@ -546,7 +546,7 @@ impl SegmentsSearcher {
     pub(crate) async fn search_payload_query_batch(
         segments: LockedSegmentHolder,
         prepared_queries: Arc<Vec<PreparedPayloadTextSearch>>,
-        runtime_handle: &Handle,
+        runtime_handle: &AdaptiveSearchHandle,
         hw_measurement_acc: HwMeasurementAcc,
         timeout: Duration,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {

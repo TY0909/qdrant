@@ -260,6 +260,7 @@ fn normalize_scored_points(
 }
 
 /// Tries to parse a query. If there is an unknown id to a token, returns `None`
+#[allow(dead_code)]
 pub fn to_parsed_query(
     query: &[String],
     is_phrase: bool,
@@ -658,7 +659,7 @@ fn test_phrase_matching_respects_array_boundaries(
     index_type: IndexType,
 ) {
     let hw = HardwareCounterCell::new();
-    let (mut builder, _temp_dir, _db) = create_builder(index_type, true);
+    let (mut builder, _temp_dir, _db) = create_builder(index_type, true, false);
 
     // ID 1: ["quick", "brown"] — words in separate elements
     let p1 = serde_json::json!(["quick", "brown"]);
@@ -726,7 +727,7 @@ fn test_phrase_matching_single_element_array(
     index_type: IndexType,
 ) {
     let hw = HardwareCounterCell::new();
-    let (mut builder, _temp_dir, _db) = create_builder(index_type, true);
+    let (mut builder, _temp_dir, _db) = create_builder(index_type, true, false);
 
     let p1 = serde_json::json!(["the quick brown fox"]);
     let p2 = serde_json::json!("the quick brown fox");

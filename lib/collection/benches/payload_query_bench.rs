@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use collection::common::adaptive_handle::AdaptiveSearchHandle;
 use collection::config::{CollectionConfigInternal, CollectionParams, WalConfig};
 use collection::operations::point_ops::{
     PointInsertOperationsInternal, PointOperations, PointStructPersisted,
@@ -194,7 +195,7 @@ fn setup() -> (
             Default::default(),
             payload_index_schema,
             handle.clone(),
-            handle.clone(),
+            AdaptiveSearchHandle::new_fixed(handle.clone()),
             ResourceBudget::default(),
             optimizers_config,
         ))
@@ -287,7 +288,7 @@ fn setup() -> (
 
 fn payload_query_bench(c: &mut Criterion) {
     let (_tempdir, shard, runtime, segment_count, query_sets, filter) = setup();
-    let search_runtime_handle = runtime.handle();
+    let search_runtime_handle = AdaptiveSearchHandle::new_fixed(runtime.handle().clone());
     let text_key: segment::json_path::JsonPath = TEXT_KEY.parse().unwrap();
 
     let scenarios: Vec<(&str, Option<Filter>)> =
@@ -379,7 +380,7 @@ fn payload_query_bench(c: &mut Criterion) {
                                 let results = shard
                                     .query_batch(
                                         requests,
-                                        search_runtime_handle,
+                                        &search_runtime_handle,
                                         Some(BENCH_TIMEOUT),
                                         HwMeasurementAcc::new(),
                                     )

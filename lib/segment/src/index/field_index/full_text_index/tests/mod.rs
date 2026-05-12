@@ -476,6 +476,7 @@ fn test_special_check_condition_match_text_any() {
         stemmer: None,
         ascii_folding: None,
         enable_hnsw: None,
+        enable_score: None,
     };
 
     let mut index = FullTextIndex::new_gridstore(temp_dir.path().to_path_buf(), config, true)

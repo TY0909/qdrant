@@ -7,7 +7,9 @@ use super::field_index_read::FieldIndexRead;
 use super::payload_field_index::PayloadFieldIndexRead;
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::facet_index::{FacetIndex, FacetIndexEnum};
-use crate::index::field_index::full_text_index::text_index::PayloadMatchQueryType;
+use crate::index::field_index::full_text_index::text_index::{
+    FullTextIndex, PayloadMatchQueryType,
+};
 use crate::index::field_index::numeric_index::{NumericFieldIndex, NumericFieldIndexRead};
 use crate::index::query_optimization::rescore_formula::value_retriever::VariableRetrieverFn;
 use crate::telemetry::PayloadIndexTelemetry;
@@ -190,5 +192,9 @@ impl FieldIndexRead for FieldIndex {
             | FieldIndex::FullTextIndex(_)
             | FieldIndex::NullIndex(_) => None,
         }
+    }
+
+    fn as_full_text_index(&self) -> Option<&FullTextIndex> {
+        FieldIndex::as_full_text_index(self)
     }
 }

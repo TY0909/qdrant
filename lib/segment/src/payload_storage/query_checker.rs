@@ -686,6 +686,7 @@ mod tests {
             stemmer: None,
             ascii_folding: None,
             enable_hnsw: None,
+            enable_score: None,
         };
 
         let mut ft_index =

@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::payload_field_index::PayloadFieldIndexRead;
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::facet_index::FacetIndex;
+use crate::index::field_index::full_text_index::text_index::FullTextIndex;
 use crate::index::field_index::numeric_index::NumericFieldIndexRead;
 use crate::index::field_index::{CardinalityEstimation, PayloadBlockCondition};
 use crate::index::query_optimization::optimized_filter::ConditionCheckerFn;
@@ -147,4 +148,13 @@ pub trait FieldIndexRead {
     ///
     /// [`PayloadIndexRead::facet_index_for`]: crate::index::PayloadIndexRead::facet_index_for
     fn as_facet_index(&self) -> Option<impl FacetIndex + '_>;
+
+    /// Borrowed full-text index view, if this is a full-text index.
+    ///
+    /// Returns `None` for every other index variant. Used by
+    /// [`PayloadIndexRead::full_text_index_for`] to locate the text
+    /// index for a given payload key.
+    fn as_full_text_index(&self) -> Option<&FullTextIndex> {
+        None
+    }
 }

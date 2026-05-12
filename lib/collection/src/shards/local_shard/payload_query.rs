@@ -43,8 +43,6 @@ impl LocalShard {
             .await
     }
 
-
-
     pub async fn search_with_payload_query(
         &self,
         payload_query: PayloadQueryInternal,

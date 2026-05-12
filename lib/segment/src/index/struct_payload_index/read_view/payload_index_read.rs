@@ -12,6 +12,7 @@ use super::StructPayloadIndexReadView;
 use crate::common::operation_error::OperationResult;
 use crate::id_tracker::{IdTrackerRead, PointMappingsRefEnum};
 use crate::index::PayloadIndexRead;
+use crate::index::field_index::full_text_index::text_index::FullTextIndex;
 use crate::index::field_index::numeric_index::NumericFieldIndexRead;
 use crate::index::field_index::{
     CardinalityEstimation, FacetIndex, FieldIndexRead, PayloadBlockCondition,
@@ -109,6 +110,13 @@ where
         self.field_indexes
             .get(key)
             .and_then(|index| index.iter().find_map(|index| index.as_facet_index()))
+    }
+
+    fn full_text_index_for<'b>(&'b self, key: &PayloadKeyType) -> Option<&'b FullTextIndex> {
+        self.field_indexes
+            .get(key)?
+            .iter()
+            .find_map(|idx| idx.as_full_text_index())
     }
 
     fn formula_scorer<'q>(

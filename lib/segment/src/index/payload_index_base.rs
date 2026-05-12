@@ -8,13 +8,13 @@ use common::types::{PointOffsetType, ScoreType};
 use serde_json::Value;
 
 use super::field_index::numeric_index::NumericFieldIndexRead;
-use super::field_index::{FacetIndex, FieldIndex};
+use super::field_index::{CardinalityEstimation, FacetIndex, FieldIndex, PayloadBlockCondition};
 use super::query_optimization::rescore_formula::FormulaScorer;
 use super::query_optimization::rescore_formula::parsed_formula::ParsedFormula;
 use crate::common::Flusher;
 use crate::common::operation_error::OperationResult;
 use crate::id_tracker::{IdTrackerRead, PointMappingsRefEnum};
-use crate::index::field_index::{CardinalityEstimation, PayloadBlockCondition};
+use crate::index::field_index::full_text_index::text_index::FullTextIndex;
 use crate::json_path::JsonPath;
 use crate::payload_storage::FilterContext;
 use crate::telemetry::PayloadIndexTelemetry;
@@ -90,6 +90,15 @@ pub trait PayloadIndexRead {
     /// Used by faceting to enumerate values and per-value point sets. The
     /// concrete facet-index type is opaque per implementation.
     fn facet_index_for(&self, key: &JsonPath) -> Option<impl FacetIndex + '_>;
+
+    /// Look up a full-text index for the given payload key, if one exists.
+    ///
+    /// Returns `None` for index implementations that don't support full-text
+    /// search (e.g. `PlainPayloadIndex`). The default implementation returns
+    /// `None`; `StructPayloadIndexReadView` overrides it.
+    fn full_text_index_for<'b>(&'b self, _key: &PayloadKeyType) -> Option<&'b FullTextIndex> {
+        None
+    }
 
     /// Per-field-index telemetry data.
     fn get_telemetry_data(&self) -> Vec<PayloadIndexTelemetry>;
