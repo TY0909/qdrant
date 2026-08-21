@@ -4288,6 +4288,7 @@ fn text_index_with_params_filters_with_stopwords() {
                         memory: None,
                         stemmer: None,
                         enable_hnsw: None,
+                        bm25_config: None,
                     },
                 },
             )

@@ -175,6 +175,7 @@ fn test_prefix_search() {
         stemmer: None,
         ascii_folding: None,
         enable_hnsw: None,
+        bm25_config: None,
     };
 
     let mut index =
@@ -235,6 +236,7 @@ fn test_phrase_matching() {
         stemmer: None,
         ascii_folding: None,
         enable_hnsw: None,
+        bm25_config: None,
     };
 
     let mut mutable_index =
@@ -369,6 +371,7 @@ fn test_ascii_folding_in_full_text_index_word() {
         stemmer: None,
         ascii_folding: Some(true),
         enable_hnsw: None,
+        bm25_config: None,
     };
     let config_disabled = TextIndexParams {
         ascii_folding: Some(false),
@@ -482,6 +485,7 @@ fn test_special_check_condition_match_text_any() {
         stemmer: None,
         ascii_folding: None,
         enable_hnsw: None,
+        bm25_config: None,
     };
 
     let mut index = FullTextIndex::new_gridstore(temp_dir.path().to_path_buf(), config, true)

@@ -83,7 +83,7 @@ mod qdrant_edge {
         PyBoolIndexParams, PyDatetimeIndexParams, PyDisabledStemmer, PyFloatIndexParams,
         PyGeoIndexParams, PyIntegerIndexParams, PyKeywordIndexParams, PyLanguage,
         PyPayloadSchemaType, PySnowballLanguage, PySnowballParams, PyStopwordsSet,
-        PyTextIndexParams, PyTokenizerType, PyUuidIndexParams,
+        PyTextIndexBm25Config, PyTextIndexParams, PyTokenizerType, PyUuidIndexParams,
     };
     #[pymodule_export]
     use super::types::query::{

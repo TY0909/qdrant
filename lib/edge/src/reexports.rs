@@ -5,7 +5,7 @@ mod reexports_from_qdrant_crates {
     pub use segment::data_types::index::{
         BoolIndexParams, DatetimeIndexParams, FloatIndexParams, GeoIndexParams, IntegerIndexParams,
         KeywordIndexParams, Language, SnowballLanguage, SnowballParams, StopwordsSet,
-        TextIndexParams, TokenizerType, UuidIndexParams,
+        TextIndexBm25Config, TextIndexParams, TokenizerType, UuidIndexParams,
     };
     pub use segment::data_types::load_profile::LoadProfile;
     pub use segment::data_types::modifier::Modifier;

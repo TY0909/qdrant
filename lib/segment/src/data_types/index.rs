@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
+use ordered_float::NotNan;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError, ValidationErrors};
@@ -255,7 +256,9 @@ pub enum TokenizerType {
     Multilingual,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Hash, Eq)]
+#[derive(
+    Debug, Default, Deserialize, Serialize, JsonSchema, Validate, Clone, PartialEq, Hash, Eq,
+)]
 #[serde(rename_all = "snake_case")]
 pub struct TextIndexParams {
     // Required for OpenAPI schema without anonymous types, versus #[serde(tag = "type")]
@@ -308,6 +311,91 @@ pub struct TextIndexParams {
     /// Default: true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_hnsw: Option<bool>,
+
+    /// Optional BM25 scoring configuration for this text index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[validate(nested)]
+    pub bm25_config: Option<TextIndexBm25Config>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Hash, Eq)]
+pub struct TextIndexBm25Config {
+    /// Whether BM25 scoring is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable: Option<bool>,
+
+    /// Term-frequency saturation parameter. Must be finite and greater than or equal to 0.
+    /// Default: 1.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0))]
+    pub k1: Option<NotNan<f64>>,
+
+    /// Document-length normalization parameter. Must be finite and in the range [0, 1].
+    /// Default: 0.75.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub b: Option<NotNan<f64>>,
+}
+
+impl TextIndexBm25Config {
+    pub const DEFAULT_K1: f64 = 1.2;
+    pub const DEFAULT_B: f64 = 0.75;
+
+    pub fn is_enabled(&self) -> bool {
+        self.enable.unwrap_or(false)
+    }
+
+    pub fn k1(&self) -> f64 {
+        self.k1.map(NotNan::into_inner).unwrap_or(Self::DEFAULT_K1)
+    }
+
+    pub fn b(&self) -> f64 {
+        self.b.map(NotNan::into_inner).unwrap_or(Self::DEFAULT_B)
+    }
+}
+
+impl Validate for TextIndexBm25Config {
+    fn validate(&self) -> Result<(), ValidationErrors> {
+        let mut errors = ValidationErrors::new();
+
+        if let Some(k1) = self.k1
+            && let Err(error) = validate_bm25_k1(k1.into_inner())
+        {
+            errors.add("k1", error);
+        }
+
+        if let Some(b) = self.b
+            && let Err(error) = validate_bm25_b(b.into_inner())
+        {
+            errors.add("b", error);
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+pub fn validate_bm25_k1(k1: f64) -> Result<(), ValidationError> {
+    if k1.is_finite() && k1 >= 0.0 {
+        Ok(())
+    } else {
+        let mut error = ValidationError::new("range");
+        error.message = Some("must be finite and greater than or equal to 0".into());
+        Err(error)
+    }
+}
+
+pub fn validate_bm25_b(b: f64) -> Result<(), ValidationError> {
+    if b.is_finite() && (0.0..=1.0).contains(&b) {
+        Ok(())
+    } else {
+        let mut error = ValidationError::new("range");
+        error.message = Some("must be finite and in the range [0, 1]".into());
+        Err(error)
+    }
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, JsonSchema, Clone, Copy, PartialEq, Hash, Eq)]
@@ -627,6 +715,73 @@ pub struct DatetimeIndexParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_text_index_bm25_config_serialization() {
+        let params = TextIndexParams {
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1: Some(NotNan::new(1.5).expect("test value is not NaN")),
+                b: Some(NotNan::new(0.6).expect("test value is not NaN")),
+            }),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&params).expect("text index params must serialize");
+        assert_eq!(
+            json,
+            r#"{"type":"text","tokenizer":"word","bm25_config":{"enable":true,"k1":1.5,"b":0.6}}"#,
+        );
+        let deserialized: TextIndexParams =
+            serde_json::from_str(&json).expect("text index params must deserialize");
+        assert_eq!(deserialized, params);
+
+        let legacy: TextIndexParams = serde_json::from_str(r#"{"type":"text"}"#)
+            .expect("configs without BM25 parameters must remain compatible");
+        assert_eq!(legacy.tokenizer, TokenizerType::Word);
+        assert_eq!(legacy.bm25_config, None);
+    }
+
+    #[test]
+    fn test_text_index_bm25_config_validation() {
+        let config = |k1: Option<f64>, b: Option<f64>| TextIndexParams {
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1: k1.map(|value| NotNan::new(value).expect("test value must not be NaN")),
+                b: b.map(|value| NotNan::new(value).expect("test value must not be NaN")),
+            }),
+            ..Default::default()
+        };
+
+        for params in [
+            config(None, None),
+            config(Some(0.0), Some(0.0)),
+            config(Some(1.2), Some(0.75)),
+            config(Some(f64::MAX), Some(1.0)),
+        ] {
+            let schema = crate::types::PayloadSchemaParams::Text(params);
+            assert!(
+                schema.validate().is_ok(),
+                "expected valid REST schema: {schema:?}"
+            );
+        }
+
+        for params in [
+            config(Some(-f64::EPSILON), Some(0.5)),
+            config(Some(f64::INFINITY), Some(0.5)),
+            config(Some(f64::NEG_INFINITY), Some(0.5)),
+            config(Some(1.2), Some(-f64::EPSILON)),
+            config(Some(1.2), Some(1.0 + f64::EPSILON)),
+            config(Some(1.2), Some(f64::INFINITY)),
+            config(Some(1.2), Some(f64::NEG_INFINITY)),
+        ] {
+            let schema = crate::types::PayloadSchemaParams::Text(params);
+            assert!(
+                schema.validate().is_err(),
+                "expected invalid REST schema: {schema:?}",
+            );
+        }
+    }
 
     #[test]
     fn test_stemming_algorithm_serialization() {

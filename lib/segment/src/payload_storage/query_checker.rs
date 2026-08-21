@@ -774,6 +774,7 @@ mod tests {
             stemmer: None,
             ascii_folding: None,
             enable_hnsw: None,
+            bm25_config: None,
         };
 
         let mut ft_index =

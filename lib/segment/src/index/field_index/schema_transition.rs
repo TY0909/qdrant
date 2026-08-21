@@ -161,6 +161,7 @@ mod tests {
             on_disk,
             stemmer: None,
             enable_hnsw: None,
+            bm25_config: None,
         })
     }
 

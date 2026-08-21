@@ -7,7 +7,9 @@ use std::fmt;
 
 use bytemuck::TransparentWrapper;
 use derive_more::Into;
+use ordered_float::NotNan;
 use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use segment::data_types::index::*;
 
@@ -23,7 +25,7 @@ pub struct PyTextIndexParams(pub TextIndexParams);
 impl PyTextIndexParams {
     #[expect(clippy::too_many_arguments)]
     #[new]
-    #[pyo3(signature = (tokenizer = None, min_token_len = None, max_token_len = None, lowercase = None, ascii_folding = None, phrase_matching = None, stopwords = None, on_disk = None, stemmer = None, enable_hnsw = None))]
+    #[pyo3(signature = (tokenizer = None, min_token_len = None, max_token_len = None, lowercase = None, ascii_folding = None, phrase_matching = None, stopwords = None, on_disk = None, stemmer = None, enable_hnsw = None, bm25_config = None))]
     pub fn new(
         tokenizer: Option<PyTokenizerType>,
         min_token_len: Option<usize>,
@@ -35,6 +37,7 @@ impl PyTextIndexParams {
         on_disk: Option<bool>,
         stemmer: Option<PyStemmingAlgorithm>,
         enable_hnsw: Option<bool>,
+        bm25_config: Option<PyTextIndexBm25Config>,
     ) -> Self {
         Self(TextIndexParams {
             r#type: Default::default(),
@@ -49,6 +52,7 @@ impl PyTextIndexParams {
             memory: None,
             stemmer: stemmer.map(StemmingAlgorithm::from),
             enable_hnsw,
+            bm25_config: bm25_config.map(Into::into),
         })
     }
 
@@ -101,6 +105,11 @@ impl PyTextIndexParams {
     pub fn enable_hnsw(&self) -> Option<bool> {
         self.0.enable_hnsw
     }
+
+    #[getter]
+    pub fn bm25_config(&self) -> Option<PyTextIndexBm25Config> {
+        self.0.bm25_config.clone().map(PyTextIndexBm25Config)
+    }
 }
 
 impl PyTextIndexParams {
@@ -119,8 +128,63 @@ impl PyTextIndexParams {
             on_disk: _,
             stemmer: _,
             enable_hnsw: _,
+            bm25_config: _,
         } = self.0;
     }
+}
+
+#[pyclass(name = "TextIndexBm25Config", from_py_object)]
+#[derive(Clone, Debug, Into, TransparentWrapper)]
+#[repr(transparent)]
+pub struct PyTextIndexBm25Config(pub TextIndexBm25Config);
+
+#[pyclass_repr]
+#[pymethods]
+impl PyTextIndexBm25Config {
+    #[new]
+    #[pyo3(signature = (enable = None, k1 = None, b = None))]
+    pub fn new(enable: Option<bool>, k1: Option<f64>, b: Option<f64>) -> PyResult<Self> {
+        Ok(Self(TextIndexBm25Config {
+            enable,
+            k1: bm25_k1(k1)?,
+            b: bm25_b(b)?,
+        }))
+    }
+
+    #[getter]
+    pub fn enable(&self) -> Option<bool> {
+        self.0.enable
+    }
+
+    #[getter]
+    pub fn k1(&self) -> Option<f64> {
+        self.0.k1.map(NotNan::into_inner)
+    }
+
+    #[getter]
+    pub fn b(&self) -> Option<f64> {
+        self.0.b.map(NotNan::into_inner)
+    }
+}
+
+fn bm25_k1(value: Option<f64>) -> PyResult<Option<NotNan<f64>>> {
+    value
+        .map(|value| {
+            validate_bm25_k1(value)
+                .map_err(|error| PyValueError::new_err(format!("BM25 k1 {error}")))?;
+            NotNan::new(value).map_err(|_| PyValueError::new_err("BM25 k1 must not be NaN"))
+        })
+        .transpose()
+}
+
+fn bm25_b(value: Option<f64>) -> PyResult<Option<NotNan<f64>>> {
+    value
+        .map(|value| {
+            validate_bm25_b(value)
+                .map_err(|error| PyValueError::new_err(format!("BM25 b {error}")))?;
+            NotNan::new(value).map_err(|_| PyValueError::new_err("BM25 b must not be NaN"))
+        })
+        .transpose()
 }
 
 #[pyclass(name = "TokenizerType", from_py_object)]

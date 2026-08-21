@@ -15,6 +15,7 @@
 //!   no information and do not cross the boundary; the index type is the
 //!   [`PayloadIndexParams`] variant itself.
 
+use ordered_float::NotNan;
 use segment::data_types::index as segment_index;
 use segment::types::{
     Memory as SegmentMemory, PayloadIndexInfo as SegmentPayloadIndexInfo, PayloadSchemaParams,
@@ -199,6 +200,23 @@ pub struct TextIndexParams {
     /// `payload_m > 0` in the HNSW config). Default: true.
     #[uniffi(default = None)]
     pub enable_hnsw: Option<bool>,
+    /// Optional BM25 scoring configuration for this text index.
+    #[uniffi(default = None)]
+    pub bm25_config: Option<TextIndexBm25Config>,
+}
+
+/// BM25 scoring parameters for a full-text payload index.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct TextIndexBm25Config {
+    /// Whether BM25 scoring is enabled.
+    #[uniffi(default = None)]
+    pub enable: Option<bool>,
+    /// Term-frequency saturation parameter. Must be finite and greater than or equal to 0.
+    #[uniffi(default = None)]
+    pub k1: Option<f64>,
+    /// Document-length normalization parameter. Must be finite and in the range [0, 1].
+    #[uniffi(default = None)]
+    pub b: Option<f64>,
 }
 
 /// Parameters of a bool payload index.
@@ -590,6 +608,26 @@ fn token_len(name: &str, len: Option<u64>) -> Result<Option<usize>, EdgeError> {
     .transpose()
 }
 
+fn bm25_k1(value: Option<f64>) -> Result<Option<NotNan<f64>>, EdgeError> {
+    value
+        .map(|value| {
+            segment_index::validate_bm25_k1(value)
+                .map_err(|error| EdgeError::invalid_argument(format!("BM25 k1 {error}")))?;
+            NotNan::new(value).map_err(|_| EdgeError::invalid_argument("BM25 k1 must not be NaN"))
+        })
+        .transpose()
+}
+
+fn bm25_b(value: Option<f64>) -> Result<Option<NotNan<f64>>, EdgeError> {
+    value
+        .map(|value| {
+            segment_index::validate_bm25_b(value)
+                .map_err(|error| EdgeError::invalid_argument(format!("BM25 b {error}")))?;
+            NotNan::new(value).map_err(|_| EdgeError::invalid_argument("BM25 b must not be NaN"))
+        })
+        .transpose()
+}
+
 // The deprecated `on_disk` flags exist solely because the internal structs
 // still declare them; the FFI surface only carries the `memory` placement, so
 // they are always written as `None`.
@@ -685,6 +723,7 @@ impl TryFrom<PayloadIndexParams> for PayloadSchemaParams {
                     memory,
                     stemmer,
                     enable_hnsw,
+                    bm25_config,
                 } = config;
                 Ok(PayloadSchemaParams::Text(segment_index::TextIndexParams {
                     r#type: segment_index::TextIndexType::Text,
@@ -701,6 +740,15 @@ impl TryFrom<PayloadIndexParams> for PayloadSchemaParams {
                     memory: memory.map(SegmentMemory::from),
                     stemmer: stemmer.map(segment_index::StemmingAlgorithm::from),
                     enable_hnsw,
+                    bm25_config: bm25_config
+                        .map(|config| -> Result<_, EdgeError> {
+                            Ok(segment_index::TextIndexBm25Config {
+                                enable: config.enable,
+                                k1: bm25_k1(config.k1)?,
+                                b: bm25_b(config.b)?,
+                            })
+                        })
+                        .transpose()?,
                 }))
             }
             PayloadIndexParams::Bool { config } => {
@@ -853,6 +901,7 @@ impl From<PayloadSchemaParams> for PayloadIndexParams {
                     memory: _,
                     stemmer,
                     enable_hnsw,
+                    bm25_config,
                 } = params;
                 PayloadIndexParams::Text {
                     config: TextIndexParams {
@@ -866,6 +915,11 @@ impl From<PayloadSchemaParams> for PayloadIndexParams {
                         memory,
                         stemmer: stemmer.map(Stemmer::from),
                         enable_hnsw,
+                        bm25_config: bm25_config.map(|config| TextIndexBm25Config {
+                            enable: config.enable,
+                            k1: config.k1.map(NotNan::into_inner),
+                            b: config.b.map(NotNan::into_inner),
+                        }),
                     },
                 }
             }

@@ -985,6 +985,7 @@ fn payload_index_params_all_variants_convert_to_matching_engine_type() {
                     memory: None,
                     stemmer: None,
                     enable_hnsw: None,
+                    bm25_config: None,
                 },
             },
             SegmentPayloadSchemaType::Text,
@@ -1085,8 +1086,8 @@ fn payload_index_params_bad_field_name_rejected() {
 fn text_index_params_full_fidelity_round_trip() {
     use qdrant_edge_ffi::config::Memory;
     use qdrant_edge_ffi::{
-        Language, PayloadIndexParams, SnowballLanguage, Stemmer, Stopwords, TextIndexParams,
-        TokenizerType,
+        Language, PayloadIndexParams, SnowballLanguage, Stemmer, Stopwords, TextIndexBm25Config,
+        TextIndexParams, TokenizerType,
     };
     use segment::data_types::index as segment_index;
     use segment::types::PayloadSchemaParams;
@@ -1108,6 +1109,11 @@ fn text_index_params_full_fidelity_round_trip() {
                 language: SnowballLanguage::English,
             }),
             enable_hnsw: Some(false),
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1: Some(1.5),
+                b: Some(0.6),
+            }),
         },
     };
 
@@ -1152,6 +1158,13 @@ fn text_index_params_full_fidelity_round_trip() {
         ))
     );
     assert_eq!(engine_text.enable_hnsw, Some(false));
+    let engine_bm25 = engine_text
+        .bm25_config
+        .as_ref()
+        .expect("BM25 config must reach the engine");
+    assert_eq!(engine_bm25.enable, Some(true));
+    assert_eq!(engine_bm25.k1.map(|value| value.into_inner()), Some(1.5));
+    assert_eq!(engine_bm25.b.map(|value| value.into_inner()), Some(0.6));
 
     // Engine → FFI: converting back must echo every option.
     let echoed = qdrant_edge_ffi::PayloadIndexParams::from(engine);
@@ -1183,6 +1196,47 @@ fn text_index_params_full_fidelity_round_trip() {
         })
     ));
     assert_eq!(config.enable_hnsw, Some(false));
+    let echoed_bm25 = config.bm25_config.expect("BM25 config must round-trip");
+    assert_eq!(echoed_bm25.enable, Some(true));
+    assert_eq!(echoed_bm25.k1, Some(1.5));
+    assert_eq!(echoed_bm25.b, Some(0.6));
+}
+
+#[test]
+fn text_index_bm25_config_rejects_invalid_ffi_values() {
+    use qdrant_edge_ffi::{PayloadIndexParams, TextIndexBm25Config, TextIndexParams};
+    use segment::types::PayloadSchemaParams;
+
+    let params = |k1, b| PayloadIndexParams::Text {
+        config: TextIndexParams {
+            tokenizer: None,
+            min_token_len: None,
+            max_token_len: None,
+            lowercase: None,
+            ascii_folding: None,
+            phrase_matching: None,
+            stopwords: None,
+            memory: None,
+            stemmer: None,
+            enable_hnsw: None,
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1,
+                b,
+            }),
+        },
+    };
+
+    for invalid in [
+        params(Some(f64::NAN), Some(0.5)),
+        params(Some(-f64::EPSILON), Some(0.5)),
+        params(Some(f64::INFINITY), Some(0.5)),
+        params(Some(1.2), Some(-f64::EPSILON)),
+        params(Some(1.2), Some(1.0 + f64::EPSILON)),
+        params(Some(1.2), Some(f64::INFINITY)),
+    ] {
+        assert!(PayloadSchemaParams::try_from(invalid).is_err());
+    }
 }
 
 #[test]

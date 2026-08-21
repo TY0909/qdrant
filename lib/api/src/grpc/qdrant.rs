@@ -1525,7 +1525,7 @@ pub struct StopwordsSet {
     pub custom: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TextIndexParams {
     /// Tokenizer type
     #[prost(enumeration = "TokenizerType", tag = "1")]
@@ -1566,6 +1566,22 @@ pub struct TextIndexParams {
     /// Overrides the deprecated `on_disk` flag if both are set.
     #[prost(enumeration = "Memory", optional, tag = "11")]
     pub memory: ::core::option::Option<i32>,
+    /// Optional BM25 scoring configuration for this text index.
+    #[prost(message, optional, tag = "12")]
+    pub bm25_config: ::core::option::Option<TextIndexBm25Config>,
+}
+#[derive(serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct TextIndexBm25Config {
+    /// Whether BM25 scoring is enabled.
+    #[prost(bool, optional, tag = "1")]
+    pub enable: ::core::option::Option<bool>,
+    /// Term-frequency saturation parameter. Must be finite and greater than or equal to 0.
+    #[prost(double, optional, tag = "2")]
+    pub k1: ::core::option::Option<f64>,
+    /// Document-length normalization parameter. Must be finite and in the range \[0, 1\].
+    #[prost(double, optional, tag = "3")]
+    pub b: ::core::option::Option<f64>,
 }
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1660,7 +1676,7 @@ pub struct UuidIndexParams {
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PayloadIndexParams {
     #[prost(
         oneof = "payload_index_params::IndexParams",
@@ -1672,7 +1688,7 @@ pub struct PayloadIndexParams {
 /// Nested message and enum types in `PayloadIndexParams`.
 pub mod payload_index_params {
     #[derive(serde::Serialize)]
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum IndexParams {
         /// Parameters for keyword index
         #[prost(message, tag = "3")]
@@ -1701,7 +1717,7 @@ pub mod payload_index_params {
     }
 }
 #[derive(serde::Serialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PayloadSchemaInfo {
     /// Field data type
     #[prost(enumeration = "PayloadSchemaType", tag = "1")]
@@ -5536,7 +5552,7 @@ pub struct ClearPayloadPoints {
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateFieldIndexCollection {
     /// name of the collection
     #[prost(string, tag = "1")]
@@ -10798,7 +10814,7 @@ pub struct ClearPayloadPointsInternal {
 }
 #[derive(serde::Serialize)]
 #[derive(validator::Validate)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateFieldIndexCollectionInternal {
     #[prost(message, optional, tag = "1")]
     #[validate(nested)]

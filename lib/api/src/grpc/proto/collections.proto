@@ -790,6 +790,17 @@ message TextIndexParams {
   // Memory placement of the index.
   // Overrides the deprecated `on_disk` flag if both are set.
   optional Memory memory = 11;
+  // Optional BM25 scoring configuration for this text index.
+  optional TextIndexBm25Config bm25_config = 12;
+}
+
+message TextIndexBm25Config {
+  // Whether BM25 scoring is enabled.
+  optional bool enable = 1;
+  // Term-frequency saturation parameter. Must be finite and greater than or equal to 0.
+  optional double k1 = 2;
+  // Document-length normalization parameter. Must be finite and in the range [0, 1].
+  optional double b = 3;
 }
 
 message StemmingAlgorithm {

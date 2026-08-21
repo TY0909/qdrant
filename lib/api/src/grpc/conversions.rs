@@ -12,11 +12,12 @@ use common::counter::hardware_accumulator::HwMeasurementAcc;
 use common::counter::hardware_data::HardwareData;
 use common::types::ScoreType;
 use itertools::Itertools;
-use ordered_float::OrderedFloat;
+use ordered_float::{NotNan, OrderedFloat};
 use segment::common::operation_error::OperationError;
 use segment::data_types::index::{
     BoolIndexType, DatetimeIndexType, FloatIndexType, GeoIndexType, IntegerIndexType,
-    KeywordIndexType, SnowballLanguage, TextIndexType, UuidIndexType,
+    KeywordIndexType, SnowballLanguage, TextIndexType, UuidIndexType, validate_bm25_b,
+    validate_bm25_k1,
 };
 use segment::data_types::modifier::Modifier;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, NamedMultiDenseVector, VectorInternal};
@@ -64,9 +65,9 @@ use crate::grpc::qdrant::{
     PointsOperationResponse, PointsOperationResponseInternal, ProductQuantization,
     QuantizationConfig, QuantizationSearchParams, QuantizationType, RepeatedIntegers,
     RepeatedStrings, ScalarQuantization, ScoredPoint, SearchParams, ShardKey, ShardKeyDescription,
-    StopwordsSet, StrictModeConfig, TextIndexParams, TokenizerType, UpdateResult,
-    UpdateResultInternal, ValuesCount, VectorsSelector, WithPayloadSelector, WithVectorsSelector,
-    shard_key, with_vectors_selector,
+    StopwordsSet, StrictModeConfig, TextIndexBm25Config, TextIndexParams, TokenizerType,
+    UpdateResult, UpdateResultInternal, ValuesCount, VectorsSelector, WithPayloadSelector,
+    WithVectorsSelector, shard_key, with_vectors_selector,
 };
 use crate::grpc::{
     self, BinaryQuantizationEncoding, BinaryQuantizationQueryEncoding, DecayParamsExpression,
@@ -337,6 +338,7 @@ impl From<segment::data_types::index::TextIndexParams> for PayloadIndexParams {
             stopwords,
             stemmer,
             enable_hnsw,
+            bm25_config,
         } = params;
         let tokenizer = TokenizerType::from(tokenizer);
 
@@ -358,6 +360,11 @@ impl From<segment::data_types::index::TextIndexParams> for PayloadIndexParams {
                 stemmer: stemming_algo,
                 enable_hnsw,
                 memory: convert_memory_to_proto(memory),
+                bm25_config: bm25_config.map(|config| TextIndexBm25Config {
+                    enable: config.enable,
+                    k1: config.k1.map(NotNan::into_inner),
+                    b: config.b.map(NotNan::into_inner),
+                }),
             })),
         }
     }
@@ -672,6 +679,7 @@ impl TryFrom<TextIndexParams> for segment::data_types::index::TextIndexParams {
             stemmer,
             enable_hnsw,
             memory,
+            bm25_config,
         } = params;
 
         // Convert stopwords if present
@@ -686,6 +694,16 @@ impl TryFrom<TextIndexParams> for segment::data_types::index::TextIndexParams {
         let stemmer = stemmer
             .and_then(|i| i.stemming_params)
             .map(segment::data_types::index::StemmingAlgorithm::try_from)
+            .transpose()?;
+
+        let bm25_config = bm25_config
+            .map(|config| -> Result<_, Status> {
+                Ok(segment::data_types::index::TextIndexBm25Config {
+                    enable: config.enable,
+                    k1: convert_bm25_param(config.k1, "k1", validate_bm25_k1)?,
+                    b: convert_bm25_param(config.b, "b", validate_bm25_b)?,
+                })
+            })
             .transpose()?;
 
         Ok(segment::data_types::index::TextIndexParams {
@@ -703,8 +721,24 @@ impl TryFrom<TextIndexParams> for segment::data_types::index::TextIndexParams {
             stopwords: stopwords_converted,
             stemmer,
             enable_hnsw,
+            bm25_config,
         })
     }
+}
+
+fn convert_bm25_param(
+    value: Option<f64>,
+    name: &'static str,
+    validate: fn(f64) -> Result<(), validator::ValidationError>,
+) -> Result<Option<NotNan<f64>>, Status> {
+    value
+        .map(|value| {
+            validate(value)
+                .map_err(|error| Status::invalid_argument(format!("BM25 {name} {error}")))?;
+            NotNan::new(value)
+                .map_err(|_| Status::invalid_argument(format!("BM25 {name} must not be NaN")))
+        })
+        .transpose()
 }
 
 impl TryFrom<StemmingParams> for segment::data_types::index::StemmingAlgorithm {
@@ -3857,5 +3891,74 @@ fn datatype_to_grpc(dt: VectorStorageDatatype) -> grpc::Datatype {
         VectorStorageDatatype::Float16 => grpc::Datatype::Float16,
         VectorStorageDatatype::Uint8 => grpc::Datatype::Uint8,
         VectorStorageDatatype::Turbo4 => grpc::Datatype::Turbo4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ordered_float::NotNan;
+    use segment::data_types::index::{
+        TextIndexBm25Config as SegmentTextIndexBm25Config,
+        TextIndexParams as SegmentTextIndexParams,
+    };
+
+    use super::*;
+
+    #[test]
+    fn text_index_bm25_config_grpc_round_trip() {
+        let params = SegmentTextIndexParams {
+            bm25_config: Some(SegmentTextIndexBm25Config {
+                enable: Some(true),
+                k1: Some(NotNan::new(1.5).expect("test value is not NaN")),
+                b: Some(NotNan::new(0.6).expect("test value is not NaN")),
+            }),
+            ..Default::default()
+        };
+
+        let grpc_params = PayloadIndexParams::from(params.clone());
+        let Some(IndexParams::TextIndexParams(grpc_params)) = grpc_params.index_params else {
+            panic!("expected text index params");
+        };
+        let round_tripped = SegmentTextIndexParams::try_from(grpc_params)
+            .expect("valid BM25 config must convert from gRPC");
+
+        assert_eq!(round_tripped, params);
+    }
+
+    #[test]
+    fn text_index_bm25_config_validates_grpc_values() {
+        let grpc_params = |k1, b| TextIndexParams {
+            tokenizer: TokenizerType::Word as i32,
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1,
+                b,
+            }),
+            ..Default::default()
+        };
+
+        for params in [
+            grpc_params(Some(0.0), Some(0.0)),
+            grpc_params(Some(f64::MAX), Some(1.0)),
+        ] {
+            SegmentTextIndexParams::try_from(params)
+                .expect("finite BM25 parameters on the inclusive boundaries must be accepted");
+        }
+
+        for params in [
+            grpc_params(Some(f64::NAN), Some(0.5)),
+            grpc_params(Some(-f64::EPSILON), Some(0.5)),
+            grpc_params(Some(f64::INFINITY), Some(0.5)),
+            grpc_params(Some(f64::NEG_INFINITY), Some(0.5)),
+            grpc_params(Some(1.2), Some(f64::NAN)),
+            grpc_params(Some(1.2), Some(-f64::EPSILON)),
+            grpc_params(Some(1.2), Some(1.0 + f64::EPSILON)),
+            grpc_params(Some(1.2), Some(f64::INFINITY)),
+            grpc_params(Some(1.2), Some(f64::NEG_INFINITY)),
+        ] {
+            let error = SegmentTextIndexParams::try_from(params)
+                .expect_err("invalid BM25 parameters must be rejected");
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
     }
 }

@@ -22,6 +22,13 @@ pub mod tokenizers;
 pub use read_only::ReadOnlyFullTextIndex;
 pub use read_ops::FullTextConditionChecker;
 
+pub(super) fn is_bm25_enabled(config: &TextIndexParams) -> bool {
+    config
+        .bm25_config
+        .as_ref()
+        .is_some_and(|bm25| bm25.is_enabled())
+}
+
 #[cfg(test)]
 mod tests;
 
