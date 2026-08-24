@@ -5,6 +5,8 @@ use posting_list::{
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::index::field_index::full_text_index::inverted_index::positions::Positions;
+use crate::index::field_index::full_text_index::inverted_index::term_frequency::TermFrequency;
+use crate::index::field_index::full_text_index::inverted_index::term_frequency_and_positions::TermFrequencyAndPositions;
 
 pub const ALIGNMENT: usize = 4;
 
@@ -19,6 +21,10 @@ pub(in crate::index::field_index::full_text_index) trait ZerocopyPostingValue:
 impl ZerocopyPostingValue for () {}
 
 impl ZerocopyPostingValue for Positions {}
+
+impl ZerocopyPostingValue for TermFrequency {}
+
+impl ZerocopyPostingValue for TermFrequencyAndPositions {}
 
 #[derive(Debug, Default, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]

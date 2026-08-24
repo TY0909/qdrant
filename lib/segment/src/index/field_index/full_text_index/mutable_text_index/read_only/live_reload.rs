@@ -9,7 +9,7 @@ use crate::common::operation_error::{OperationError, OperationResult};
 use crate::index::field_index::LiveReload;
 use crate::index::field_index::full_text_index::FullTextIndex;
 use crate::index::field_index::full_text_index::inverted_index::{
-    Document, InvertedIndex, TokenSet,
+    ARRAY_BOUNDARY_SENTINEL, Document, InvertedIndex, TokenFrequencyMap, TokenSet,
 };
 
 impl<S: UniversalRead> LiveReload for ReadOnlyAppendableFullTextIndex<S> {
@@ -29,6 +29,7 @@ impl<S: UniversalRead> LiveReload for ReadOnlyAppendableFullTextIndex<S> {
         self.storage.live_reload(fs)?;
 
         let phrase_matching = self.inner.config.phrase_matching.unwrap_or_default();
+        let with_frequencies = super::super::super::is_bm25_enabled(&self.inner.config);
         let inner = &mut self.inner;
 
         for &deleted_point in deleted_points {
@@ -48,7 +49,14 @@ impl<S: UniversalRead> LiveReload for ReadOnlyAppendableFullTextIndex<S> {
                     // register the tokens, then index them (plus the ordered
                     // document when phrase matching is enabled).
                     let str_tokens = FullTextIndex::deserialize_document(&value)?;
-                    let tokens = inner.inverted_index.register_tokens(str_tokens);
+                    let tokens = inner.inverted_index.register_tokens(&str_tokens);
+                    let boundary_token_id =
+                        str_tokens
+                            .iter()
+                            .zip(&tokens)
+                            .find_map(|(token, &token_id)| {
+                                (token == ARRAY_BOUNDARY_SENTINEL).then_some(token_id)
+                            });
                     if phrase_matching {
                         inner.inverted_index.index_document(
                             point_offset,
@@ -56,11 +64,19 @@ impl<S: UniversalRead> LiveReload for ReadOnlyAppendableFullTextIndex<S> {
                             hw_counter,
                         )?;
                     }
-                    inner.inverted_index.index_tokens(
-                        point_offset,
-                        TokenSet::from_iter(tokens),
-                        hw_counter,
-                    )?;
+                    if with_frequencies {
+                        inner.inverted_index.index_token_frequencies(
+                            point_offset,
+                            TokenFrequencyMap::from_tokens(&tokens, boundary_token_id),
+                            hw_counter,
+                        )?;
+                    } else {
+                        inner.inverted_index.index_tokens(
+                            point_offset,
+                            TokenSet::from_iter(tokens),
+                            hw_counter,
+                        )?;
+                    }
                     Ok(true)
                 },
                 hw_counter.payload_index_io_read_counter(),

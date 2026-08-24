@@ -12,7 +12,9 @@ use super::super::immutable_text_index::ImmutableFullTextIndex;
 use super::super::inverted_index::immutable_inverted_index::ImmutableInvertedIndex;
 use super::super::inverted_index::mutable_inverted_index::MutableInvertedIndex;
 use super::super::inverted_index::on_disk_inverted_index::OnDiskInvertedIndex;
-use super::super::inverted_index::{ARRAY_BOUNDARY_SENTINEL, Document, InvertedIndex, TokenSet};
+use super::super::inverted_index::{
+    ARRAY_BOUNDARY_SENTINEL, Document, InvertedIndex, TokenFrequencyMap, TokenSet,
+};
 use super::super::tokenizers::Tokenizer;
 use super::{FullTextMmapIndexBuilder, OnDiskFullTextIndex};
 use crate::common::Flusher;
@@ -41,10 +43,17 @@ impl<S: UniversalRead> OnDiskFullTextIndex<S> {
         deleted_points: &BitSlice,
     ) -> OperationResult<Option<Self>> {
         let has_positions = config.phrase_matching == Some(true);
+        let has_frequencies = super::super::is_bm25_enabled(&config);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
 
-        let inverted_index =
-            OnDiskInvertedIndex::<S>::open(fs, path, populate, has_positions, deleted_points)?;
+        let inverted_index = OnDiskInvertedIndex::<S>::open(
+            fs,
+            path,
+            populate,
+            has_positions,
+            has_frequencies,
+            deleted_points,
+        )?;
         Ok(inverted_index.map(|inverted_index| Self {
             inverted_index,
             tokenizer,
@@ -98,10 +107,11 @@ impl FullTextMmapIndexBuilder {
         deleted_points: &BitSlice,
     ) -> Self {
         let with_positions = config.phrase_matching.unwrap_or_default();
+        let with_frequencies = super::super::is_bm25_enabled(&config);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
         Self {
             path,
-            mutable_index: MutableInvertedIndex::new(with_positions),
+            mutable_index: MutableInvertedIndex::new(with_positions, with_frequencies),
             config,
             is_on_disk,
             tokenizer,
@@ -149,6 +159,12 @@ impl ValueIndexer for FullTextMmapIndexBuilder {
         }
 
         let tokens = self.mutable_index.register_tokens(&str_tokens);
+        let boundary_token_id = str_tokens
+            .iter()
+            .zip(&tokens)
+            .find_map(|(token, &token_id)| {
+                (token.as_ref() == ARRAY_BOUNDARY_SENTINEL).then_some(token_id)
+            });
 
         if phrase_matching {
             let document = Document::new(tokens.clone());
@@ -156,8 +172,16 @@ impl ValueIndexer for FullTextMmapIndexBuilder {
                 .index_document(id, document, hw_counter)?;
         }
 
-        let token_set = TokenSet::from_iter(tokens);
-        self.mutable_index.index_tokens(id, token_set, hw_counter)?;
+        if self.mutable_index.has_frequencies() {
+            self.mutable_index.index_token_frequencies(
+                id,
+                TokenFrequencyMap::from_tokens(&tokens, boundary_token_id),
+                hw_counter,
+            )?;
+        } else {
+            let token_set = TokenSet::from_iter(tokens);
+            self.mutable_index.index_tokens(id, token_set, hw_counter)?;
+        }
 
         Ok(())
     }
@@ -195,7 +219,7 @@ impl FieldIndexBuilderTrait for FullTextMmapIndexBuilder {
             deleted_points,
         } = self;
 
-        let immutable = ImmutableInvertedIndex::from(mutable_index);
+        let immutable = ImmutableInvertedIndex::try_from(mutable_index)?;
 
         fs::create_dir_all(path.as_path())?;
 
@@ -203,13 +227,20 @@ impl FieldIndexBuilderTrait for FullTextMmapIndexBuilder {
 
         let populate = Populate::from(!is_on_disk);
         let has_positions = config.phrase_matching.unwrap_or_default();
-        let inverted_index =
-            OnDiskInvertedIndex::open(&MmapFs, path, populate, has_positions, &deleted_points)?
-                .ok_or_else(|| {
-                    OperationError::service_error(
-                        "Failed to open OnDiskInvertedIndex that was just created",
-                    )
-                })?;
+        let has_frequencies = super::super::is_bm25_enabled(&config);
+        let inverted_index = OnDiskInvertedIndex::open(
+            &MmapFs,
+            path,
+            populate,
+            has_positions,
+            has_frequencies,
+            &deleted_points,
+        )?
+        .ok_or_else(|| {
+            OperationError::service_error(
+                "Failed to open OnDiskInvertedIndex that was just created",
+            )
+        })?;
 
         let on_disk_index = OnDiskFullTextIndex {
             inverted_index,

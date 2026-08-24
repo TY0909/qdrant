@@ -4,9 +4,11 @@ use posting_list::{PostingIterator, PostingListView, PostingValue};
 
 use super::posting_list::PostingList;
 use crate::index::field_index::full_text_index::inverted_index::positions::{
-    PartialDocument, Positions, TokenPosition,
+    PartialDocument, TokenPosition,
 };
-use crate::index::field_index::full_text_index::inverted_index::{Document, TokenId};
+use crate::index::field_index::full_text_index::inverted_index::{
+    Document, PositionalPostingValue, TokenId,
+};
 
 pub fn intersect_postings_iterator<'a>(
     mut postings: Vec<&'a PostingList>,
@@ -85,9 +87,12 @@ pub fn merge_compressed_postings_iterator<'a, V: PostingValue + 'a>(
 }
 
 /// Returns an iterator over the points that match the given phrase query.
-pub fn intersect_compressed_postings_phrase_iterator<'a>(
+pub fn intersect_compressed_postings_phrase_iterator<
+    'a,
+    V: PostingValue + PositionalPostingValue + 'a,
+>(
     phrase: Document,
-    mut postings: Vec<(TokenId, PostingListView<'a, Positions>)>,
+    mut postings: Vec<(TokenId, PostingListView<'a, V>)>,
     is_active: impl Fn(PointOffsetType) -> bool + 'a,
 ) -> impl Iterator<Item = PointOffsetType> + 'a {
     if phrase.is_empty() {
@@ -136,11 +141,11 @@ pub fn intersect_compressed_postings_phrase_iterator<'a>(
 /// # Arguments
 ///
 /// - `initial_tokens_positions` - must be prepopulated if iterating over a posting not included in the `posting_iterators`.
-fn phrase_in_all_postings<'a>(
+fn phrase_in_all_postings<'a, V: PostingValue + PositionalPostingValue>(
     id: PointOffsetType,
     phrase: &Document,
     initial_tokens_positions: Vec<TokenPosition>,
-    posting_iterators: &mut Vec<(TokenId, PostingIterator<'a, Positions>)>,
+    posting_iterators: &mut Vec<(TokenId, PostingIterator<'a, V>)>,
 ) -> bool {
     let mut tokens_positions = initial_tokens_positions;
     for (token_id, posting_iterator) in posting_iterators.iter_mut() {
@@ -162,14 +167,14 @@ fn phrase_in_all_postings<'a>(
     PartialDocument::new(tokens_positions).has_phrase(phrase)
 }
 
-pub fn check_compressed_postings_phrase(
+pub fn check_compressed_postings_phrase<'a, V: PostingValue + PositionalPostingValue>(
     phrase: &Document,
     point_id: PointOffsetType,
-    token_to_posting: Vec<(TokenId, PostingListView<'_, Positions>)>,
+    token_to_posting: &[(TokenId, PostingListView<'a, V>)],
 ) -> bool {
     let mut posting_iterators = token_to_posting
-        .into_iter()
-        .map(|(token_id, posting)| (token_id, posting.into_iter()))
+        .iter()
+        .map(|(token_id, posting)| (*token_id, posting.clone().into_iter()))
         .collect::<Vec<_>>();
 
     phrase_in_all_postings(point_id, phrase, Vec::new(), &mut posting_iterators)

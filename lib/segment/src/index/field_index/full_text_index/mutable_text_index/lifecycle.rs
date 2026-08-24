@@ -7,7 +7,9 @@ use common::universal_io::{MmapFs, Populate};
 
 use super::super::FullTextIndex;
 use super::super::inverted_index::mutable_inverted_index_builder::MutableInvertedIndexBuilder;
-use super::super::inverted_index::{Document, InvertedIndex, TokenSet};
+use super::super::inverted_index::{
+    ARRAY_BOUNDARY_SENTINEL, Document, InvertedIndex, TokenFrequencyMap, TokenSet,
+};
 use super::super::tokenizers::Tokenizer;
 use super::inner::MutableFullTextIndexInner;
 use super::{MutableFullTextIndex, storage_options};
@@ -47,12 +49,13 @@ impl MutableFullTextIndex {
         };
 
         let phrase_matching = config.phrase_matching.unwrap_or_default();
+        let with_frequencies = super::super::is_bm25_enabled(&config);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
 
         let hw_counter = HardwareCounterCell::disposable();
         let hw_counter_ref = hw_counter.ref_payload_index_io_write_counter();
 
-        let mut builder = MutableInvertedIndexBuilder::new(phrase_matching);
+        let mut builder = MutableInvertedIndexBuilder::new(phrase_matching, with_frequencies);
 
         store
             .iter::<_, OperationError>(
@@ -71,7 +74,7 @@ impl MutableFullTextIndex {
 
         Ok(Some(Self {
             inner: MutableFullTextIndexInner {
-                inverted_index: builder.build(),
+                inverted_index: builder.build()?,
                 config,
                 tokenizer,
             },
@@ -124,10 +127,17 @@ impl MutableFullTextIndex {
         }
 
         let phrase_matching = self.inner.config.phrase_matching.unwrap_or_default();
+        let with_frequencies = super::super::is_bm25_enabled(&self.inner.config);
         let str_tokens =
             FullTextIndex::tokenize_document(&self.inner.tokenizer, phrase_matching, &values);
 
         let tokens = self.inner.inverted_index.register_tokens(&str_tokens);
+        let boundary_token_id = str_tokens
+            .iter()
+            .zip(&tokens)
+            .find_map(|(token, &token_id)| {
+                (token.as_ref() == ARRAY_BOUNDARY_SENTINEL).then_some(token_id)
+            });
 
         if phrase_matching {
             let document = Document::new(tokens.clone());
@@ -136,12 +146,23 @@ impl MutableFullTextIndex {
                 .index_document(idx, document, hw_counter)?;
         }
 
-        let token_set = TokenSet::from_iter(tokens);
-        self.inner
-            .inverted_index
-            .index_tokens(idx, token_set, hw_counter)?;
+        if with_frequencies {
+            self.inner.inverted_index.index_token_frequencies(
+                idx,
+                TokenFrequencyMap::from_tokens(&tokens, boundary_token_id),
+                hw_counter,
+            )?;
+        } else {
+            let token_set = TokenSet::from_iter(tokens);
+            self.inner
+                .inverted_index
+                .index_tokens(idx, token_set, hw_counter)?;
+        }
 
-        let db_document = FullTextIndex::serialize_stored_document(str_tokens, phrase_matching)?;
+        let db_document = FullTextIndex::serialize_stored_document(
+            str_tokens,
+            phrase_matching || with_frequencies,
+        )?;
 
         // Update persisted storage
         self.storage

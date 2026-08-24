@@ -1,13 +1,17 @@
 use posting_list::{PostingValue, UnsizedHandler, UnsizedValue};
 use zerocopy::{FromBytes, IntoBytes};
 
-use crate::index::field_index::full_text_index::inverted_index::{Document, TokenId};
+use super::{Document, PositionalPostingValue, TokenId};
 
 /// Represents a list of positions of a token in a document.
 #[derive(Default, Clone, Debug)]
 pub struct Positions(Vec<u32>);
 
 impl Positions {
+    pub(super) fn new(positions: Vec<u32>) -> Self {
+        Self(positions)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -24,6 +28,16 @@ impl Positions {
                 position: *pos,
             })
             .collect()
+    }
+}
+
+impl PositionalPostingValue for Positions {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn to_token_positions(&self, token_id: TokenId) -> Vec<TokenPosition> {
+        self.to_token_positions(token_id)
     }
 }
 

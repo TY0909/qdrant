@@ -1,11 +1,14 @@
 pub(super) mod immutable_inverted_index;
 pub mod immutable_postings_enum;
+mod length_norm;
 pub(super) mod mutable_inverted_index;
 pub(super) mod mutable_inverted_index_builder;
 pub(super) mod on_disk_inverted_index;
 mod positions;
 mod posting_list;
 mod postings_iterator;
+mod term_frequency;
+mod term_frequency_and_positions;
 
 use std::cmp::min;
 use std::collections::HashMap;
@@ -21,6 +24,95 @@ use crate::index::query_estimator::expected_should_estimation;
 use crate::types::{FieldCondition, Match, PayloadKeyType};
 
 pub type TokenId = u32;
+
+pub(super) trait PositionalPostingValue {
+    fn is_empty(&self) -> bool;
+    fn to_token_positions(&self, token_id: TokenId) -> Vec<positions::TokenPosition>;
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Bm25Stats {
+    pub(super) doc_count: u64,
+    pub(super) sum_doc_len: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct Bm25State<L> {
+    pub(super) document_lengths: L,
+    pub(super) stats: Bm25Stats,
+}
+
+/// BM25 state with exact document lengths used by mutable indexes.
+pub(super) type MutableBm25State = Bm25State<Vec<u32>>;
+
+/// BM25 state with encoded one-byte document lengths used by immutable indexes.
+pub(super) type ImmutableBm25State = Bm25State<Vec<u8>>;
+
+impl Bm25Stats {
+    pub(super) fn add_document(&mut self, document_length: u32) {
+        if document_length == 0 {
+            return;
+        }
+        self.doc_count = self.doc_count.saturating_add(1);
+        self.sum_doc_len = self.sum_doc_len.saturating_add(u64::from(document_length));
+    }
+
+    pub(super) fn remove_document(&mut self, document_length: u32) {
+        if document_length == 0 {
+            return;
+        }
+        self.doc_count = self.doc_count.saturating_sub(1);
+        self.sum_doc_len = self.sum_doc_len.saturating_sub(u64::from(document_length));
+    }
+}
+
+/// Unique token IDs and their raw frequencies in a document.
+#[derive(Default, Debug, Clone)]
+pub(super) struct TokenFrequencyMap {
+    frequencies: Vec<(TokenId, u32)>,
+    document_length: u32,
+}
+
+impl TokenFrequencyMap {
+    pub(super) fn from_tokens(token_ids: &[TokenId], excluded_token_id: Option<TokenId>) -> Self {
+        let mut frequencies = HashMap::<TokenId, u32>::new();
+        let mut document_length = 0u32;
+
+        for &token_id in token_ids
+            .iter()
+            .filter(|&&token_id| Some(token_id) != excluded_token_id)
+        {
+            frequencies
+                .entry(token_id)
+                .and_modify(|frequency| *frequency = frequency.saturating_add(1))
+                .or_insert(1);
+            document_length = document_length.saturating_add(1);
+        }
+
+        let mut frequencies = frequencies.into_iter().collect::<Vec<_>>();
+        frequencies.sort_unstable_by_key(|&(token_id, _)| token_id);
+
+        Self {
+            frequencies,
+            document_length,
+        }
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (TokenId, u32)> + '_ {
+        self.frequencies.iter().copied()
+    }
+
+    pub(super) fn tokens_set(&self) -> TokenSet {
+        self.frequencies
+            .iter()
+            .map(|&(token_id, _)| token_id)
+            .collect()
+    }
+
+    pub(super) fn document_length(&self) -> u32 {
+        self.document_length
+    }
+}
 
 /// Sentinel string inserted between tokens of consecutive array elements.
 /// When registered as a normal vocab token it occupies a position in the
@@ -419,9 +511,13 @@ mod tests {
     use rand::seq::SliceRandom;
     use rstest::rstest;
 
-    use super::{Document, InvertedIndex, ParsedQuery, TokenId, TokenSet};
+    use super::{
+        ARRAY_BOUNDARY_SENTINEL, Bm25Stats, Document, InvertedIndex, ParsedQuery,
+        TokenFrequencyMap, TokenId, TokenSet,
+    };
     use crate::index::field_index::full_text_index::inverted_index::immutable_inverted_index::ImmutableInvertedIndex;
     use crate::index::field_index::full_text_index::inverted_index::mutable_inverted_index::MutableInvertedIndex;
+    use crate::index::field_index::full_text_index::inverted_index::mutable_inverted_index_builder::MutableInvertedIndexBuilder;
     use crate::index::field_index::full_text_index::inverted_index::on_disk_inverted_index::OnDiskInvertedIndex;
 
     fn generate_word() -> String {
@@ -478,7 +574,7 @@ mod tests {
         deleted_count: u32,
         with_positions: bool,
     ) -> MutableInvertedIndex {
-        let mut index = MutableInvertedIndex::new(with_positions);
+        let mut index = MutableInvertedIndex::new(with_positions, false);
 
         let hw_counter = HardwareCounterCell::new();
 
@@ -506,12 +602,169 @@ mod tests {
         index
     }
 
+    fn bm25_mutable_inverted_index(with_positions: bool) -> MutableInvertedIndex {
+        let mut index = MutableInvertedIndex::new(with_positions, true);
+        let hw_counter = HardwareCounterCell::new();
+        let documents = [
+            vec!["alpha", "alpha", "alpha", "beta"],
+            vec!["alpha", ARRAY_BOUNDARY_SENTINEL, "gamma"],
+            Vec::new(),
+        ];
+
+        for (point_id, document) in (0u32..).zip(documents) {
+            let token_ids = index.register_tokens(document);
+            let boundary_token_id = index.vocab.get(ARRAY_BOUNDARY_SENTINEL).copied();
+            if with_positions {
+                index
+                    .index_document(point_id, Document::new(token_ids.clone()), &hw_counter)
+                    .unwrap();
+            }
+            index
+                .index_token_frequencies(
+                    point_id,
+                    TokenFrequencyMap::from_tokens(&token_ids, boundary_token_id),
+                    &hw_counter,
+                )
+                .unwrap();
+        }
+
+        index
+    }
+
+    #[test]
+    fn test_frequency_indexing_rejects_id_only_index_without_mutation() {
+        let mut index = MutableInvertedIndex::new(false, false);
+        let token_ids = index.register_tokens(["alpha"]);
+        let result = index.index_token_frequencies(
+            0,
+            TokenFrequencyMap::from_tokens(&token_ids, None),
+            &HardwareCounterCell::new(),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(index.points_count, 0);
+        assert!(index.point_to_tokens.is_empty());
+        assert!(index.postings.is_empty());
+    }
+
+    #[test]
+    fn test_id_only_indexing_rejects_frequency_index_without_mutation() {
+        let mut index = MutableInvertedIndex::new(false, true);
+        let result = index.index_tokens(0, TokenSet::from_iter([0]), &HardwareCounterCell::new());
+
+        assert!(result.is_err());
+        assert_eq!(index.points_count, 0);
+        assert!(index.point_to_tokens.is_empty());
+        assert!(index.postings.is_empty());
+    }
+
+    #[rstest]
+    fn test_bm25_builder_state(#[values(false, true)] phrase_matching: bool) {
+        let mut builder = MutableInvertedIndexBuilder::new(phrase_matching, true);
+        builder.add(
+            0,
+            ["alpha".to_owned(), "alpha".to_owned(), "beta".to_owned()],
+        );
+
+        let index = builder.build().unwrap();
+        let bm25 = index.bm25.as_ref().unwrap();
+        assert_eq!(
+            bm25.stats,
+            Bm25Stats {
+                doc_count: 1,
+                sum_doc_len: 3,
+            },
+        );
+        assert_eq!(bm25.document_lengths, [3]);
+    }
+
+    #[test]
+    fn test_mutable_bm25_state_follows_deletions() {
+        let mut index = bm25_mutable_inverted_index(false);
+        assert!(index.remove(0));
+
+        let bm25 = index.bm25.as_ref().unwrap();
+        assert_eq!(
+            bm25.stats,
+            Bm25Stats {
+                doc_count: 1,
+                sum_doc_len: 2,
+            },
+        );
+        assert_eq!(bm25.document_lengths, [0, 2, 0]);
+    }
+
+    #[rstest]
+    fn test_mutable_to_immutable_rejects_missing_positions(
+        #[values(false, true)] with_frequencies: bool,
+    ) {
+        let mut index = MutableInvertedIndex::new(true, with_frequencies);
+        let token_ids = index.register_tokens(["alpha"]);
+        let hw_counter = HardwareCounterCell::new();
+
+        if with_frequencies {
+            index
+                .index_token_frequencies(
+                    0,
+                    TokenFrequencyMap::from_tokens(&token_ids, None),
+                    &hw_counter,
+                )
+                .unwrap();
+        } else {
+            index
+                .index_tokens(0, TokenSet::from_iter(token_ids), &hw_counter)
+                .unwrap();
+        }
+
+        assert!(ImmutableInvertedIndex::try_from(index).is_err());
+    }
+
+    #[rstest]
+    fn test_bm25_storage_roundtrip(#[values(false, true)] phrase_matching: bool) {
+        let mutable = bm25_mutable_inverted_index(phrase_matching);
+
+        let alpha_id = mutable.vocab["alpha"];
+        assert_eq!(
+            mutable.postings[alpha_id as usize]
+                .iter_frequencies()
+                .map(|element| (element.point_id(), element.term_frequency()))
+                .collect::<Vec<_>>(),
+            vec![(0, 3), (1, 1)],
+        );
+        assert!(
+            !mutable.vocab.contains_key(ARRAY_BOUNDARY_SENTINEL) || {
+                let boundary_id = mutable.vocab[ARRAY_BOUNDARY_SENTINEL];
+                mutable.postings[boundary_id as usize].is_empty()
+            }
+        );
+
+        let immutable = ImmutableInvertedIndex::try_from(mutable).unwrap();
+        assert!(!immutable.vocab.contains_key(ARRAY_BOUNDARY_SENTINEL));
+
+        let mmap_dir = tempfile::tempdir().unwrap();
+        OnDiskInvertedIndex::create(mmap_dir.path().into(), &immutable).unwrap();
+        let empty_deleted = BitVec::new();
+        let mmap = OnDiskInvertedIndex::open(
+            &MmapFs,
+            mmap_dir.path().into(),
+            Populate::No,
+            phrase_matching,
+            true,
+            &empty_deleted,
+        )
+        .unwrap()
+        .unwrap();
+
+        let restored = ImmutableInvertedIndex::try_from(&mmap).unwrap();
+        assert!(restored.vocab.contains_key("alpha"));
+    }
+
     #[rstest]
     fn test_mutable_to_immutable(#[values(false, true)] phrase_matching: bool) {
         let mutable = mutable_inverted_index(2000, 400, phrase_matching);
 
         // todo: test with phrase-enabled
-        let immutable = ImmutableInvertedIndex::from(mutable.clone());
+        let immutable = ImmutableInvertedIndex::try_from(mutable.clone()).unwrap();
 
         assert!(immutable.vocab.len() < mutable.vocab.len());
         assert!(immutable.postings.len() < mutable.postings.len());
@@ -554,7 +807,7 @@ mod tests {
         use std::collections::HashSet;
 
         let mutable = mutable_inverted_index(indexed_count, deleted_count, phrase_matching);
-        let immutable = ImmutableInvertedIndex::from(mutable);
+        let immutable = ImmutableInvertedIndex::try_from(mutable).unwrap();
 
         let mmap_dir = tempfile::tempdir().unwrap();
 
@@ -567,6 +820,7 @@ mod tests {
             mmap_dir.path().into(),
             Populate::No,
             phrase_matching,
+            false,
             &empty_deleted,
         )
         .unwrap()
@@ -640,7 +894,7 @@ mod tests {
 
         let mut mut_index = mutable_inverted_index(indexed_count, deleted_count, phrase_matching);
 
-        let immutable = ImmutableInvertedIndex::from(mut_index.clone());
+        let immutable = ImmutableInvertedIndex::try_from(mut_index.clone()).unwrap();
         OnDiskInvertedIndex::create(mmap_dir.path().into(), &immutable).unwrap();
         let empty_deleted = BitVec::new();
         let mut mmap_index = OnDiskInvertedIndex::open(
@@ -648,6 +902,7 @@ mod tests {
             mmap_dir.path().into(),
             Populate::No,
             phrase_matching,
+            false,
             &empty_deleted,
         )
         .unwrap()

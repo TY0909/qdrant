@@ -23,6 +23,8 @@ use super::positions::Positions;
 use super::postings_iterator::{
     intersect_compressed_postings_iterator, merge_compressed_postings_iterator,
 };
+use super::term_frequency::TermFrequency;
+use super::term_frequency_and_positions::TermFrequencyAndPositions;
 use super::{InvertedIndex, ParsedQuery, TokenId, TokenSet};
 use crate::common::Flusher;
 use crate::common::operation_error::{OperationError, OperationResult};
@@ -43,12 +45,18 @@ pub(in crate::index::field_index::full_text_index) mod types;
 const POSTINGS_FILE: &str = "postings.dat";
 const VOCAB_FILE: &str = "vocab.dat";
 const POINT_TO_TOKENS_COUNT_FILE: &str = "point_to_tokens_count.dat";
+const POINT_TO_DOCUMENT_LENGTH_FILE: &str = "point_to_document_length.dat";
+const BM25_STATS_FILE: &str = "bm25_stats.dat";
 const DELETED_POINTS_FILE: &str = "deleted_points.dat";
+
+/// BM25 state backed by encoded document lengths in universal storage.
+pub(in crate::index::field_index::full_text_index) type OnDiskBm25State<S> =
+    super::Bm25State<TypedStorage<S, u8>>;
 
 /// Mmap-backed immutable full-text inverted index.
 ///
 /// On-disk state (`postings.dat`, `vocab.dat`, `point_to_tokens_count.dat`,
-/// `deleted_mask.bin`) is written once during [`Self::create`] and not
+/// optional BM25 norm/stat files, and `deleted_mask.bin`) is written once during [`Self::create`] and not
 /// mutated afterwards: `deleted_mask.bin` (legacy `deleted_points.dat` on
 /// older segments) records only the points whose document was empty at build
 /// time.
@@ -71,6 +79,7 @@ pub(in crate::index::field_index::full_text_index) struct Storage<S: UniversalRe
     pub(in crate::index::field_index::full_text_index) vocab: UniversalHashMap<str, TokenId, S>,
     pub(in crate::index::field_index::full_text_index) point_to_tokens_count:
         TypedStorage<S, usize>,
+    pub(in crate::index::field_index::full_text_index) bm25: Option<OnDiskBm25State<S>>,
     pub(in crate::index::field_index::full_text_index) deleted_points: DeletedBitVec,
 }
 
@@ -80,6 +89,7 @@ impl<S: UniversalRead> Storage<S> {
             postings: _,
             vocab: _,
             point_to_tokens_count: _,
+            bm25: _,
             deleted_points,
         } = self;
 
@@ -94,6 +104,7 @@ impl OnDiskInvertedIndex<MmapFile> {
             vocab,
             point_to_tokens_count,
             points_count: _,
+            bm25,
         } = inverted_index;
 
         debug_assert_eq!(vocab.len(), postings.len());
@@ -101,10 +112,18 @@ impl OnDiskInvertedIndex<MmapFile> {
         let postings_path = path.join(POSTINGS_FILE);
         let vocab_path = path.join(VOCAB_FILE);
         let point_to_tokens_count_path = path.join(POINT_TO_TOKENS_COUNT_FILE);
+        let point_to_document_length_path = path.join(POINT_TO_DOCUMENT_LENGTH_FILE);
+        let bm25_stats_path = path.join(BM25_STATS_FILE);
 
         match postings {
             ImmutablePostings::Ids(postings) => create_postings_file(postings_path, postings)?,
             ImmutablePostings::WithPositions(postings) => {
+                create_postings_file(postings_path, postings)?
+            }
+            ImmutablePostings::WithFrequencies(postings) => {
+                create_postings_file(postings_path, postings)?
+            }
+            ImmutablePostings::WithFrequenciesAndPositions(postings) => {
                 create_postings_file(postings_path, postings)?
             }
         }
@@ -131,6 +150,17 @@ impl OnDiskInvertedIndex<MmapFile> {
         let point_to_tokens_count_iter = point_to_tokens_count.iter().copied();
 
         MmapSlice::create(&point_to_tokens_count_path, point_to_tokens_count_iter)?;
+
+        if let Some(bm25) = bm25 {
+            MmapSlice::create(
+                &point_to_document_length_path,
+                bm25.document_lengths.iter().copied(),
+            )?;
+            MmapSlice::create(
+                &bm25_stats_path,
+                [bm25.stats.doc_count, bm25.stats.sum_doc_len].into_iter(),
+            )?;
+        }
 
         Ok(())
     }
@@ -186,6 +216,23 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             None,
         )?;
 
+        // Optional BM25 files. Whether they are required is known only when
+        // `open` receives the text-index configuration.
+        let _ = fs
+            .schedule_prefetch(
+                &path.join(POINT_TO_DOCUMENT_LENGTH_FILE),
+                Some(Self::open_options(populate, AdviceSetting::Global)),
+                None,
+            )
+            .ok_not_found()?;
+        let _ = fs
+            .schedule_prefetch(
+                &path.join(BM25_STATS_FILE),
+                Some(Self::open_options(populate, AdviceSetting::Global)),
+                None,
+            )
+            .ok_not_found()?;
+
         // "No tokens" mask
         preopen_deleted_mask(
             fs,
@@ -202,30 +249,47 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         path: PathBuf,
         populate: Populate,
         has_positions: bool,
+        has_frequencies: bool,
         deleted_points: &BitSlice,
     ) -> OperationResult<Option<Self>> {
         let postings_path = path.join(POSTINGS_FILE);
         let vocab_path = path.join(VOCAB_FILE);
         let point_to_tokens_count_path = path.join(POINT_TO_TOKENS_COUNT_FILE);
+        let point_to_document_length_path = path.join(POINT_TO_DOCUMENT_LENGTH_FILE);
+        let bm25_stats_path = path.join(BM25_STATS_FILE);
 
         let postings_open_options =
             Self::open_options(populate, AdviceSetting::Advice(Advice::Normal));
 
-        let Some(postings) = (match has_positions {
-            false => OnDiskPostings::<(), S>::open(
+        let Some(postings) = (match (has_frequencies, has_positions) {
+            (false, false) => OnDiskPostings::<(), S>::open(
                 fs,
                 &postings_path,
                 postings_open_options,
                 Default::default(),
             )?
             .map(OnDiskPostingsEnum::Ids),
-            true => OnDiskPostings::<Positions, S>::open(
+            (false, true) => OnDiskPostings::<Positions, S>::open(
                 fs,
                 &postings_path,
                 postings_open_options,
                 Default::default(),
             )?
             .map(OnDiskPostingsEnum::WithPositions),
+            (true, false) => OnDiskPostings::<TermFrequency, S>::open(
+                fs,
+                &postings_path,
+                postings_open_options,
+                Default::default(),
+            )?
+            .map(OnDiskPostingsEnum::WithFrequencies),
+            (true, true) => OnDiskPostings::<TermFrequencyAndPositions, S>::open(
+                fs,
+                &postings_path,
+                postings_open_options,
+                Default::default(),
+            )?
+            .map(OnDiskPostingsEnum::WithFrequenciesAndPositions),
         }) else {
             // If postings don't exist, assume the index doesn't exist on disk
             return Ok(None);
@@ -243,6 +307,34 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             Default::default(),
         )?);
 
+        let bm25 = if has_frequencies {
+            let document_lengths = TypedStorage::<S, u8>::new(fs.open(
+                &point_to_document_length_path,
+                Self::open_options(populate, AdviceSetting::Global),
+                Default::default(),
+            )?);
+            let stats_storage = TypedStorage::<S, u64>::new(fs.open(
+                &bm25_stats_path,
+                Self::open_options(populate, AdviceSetting::Global),
+                Default::default(),
+            )?);
+            let stats = stats_storage.read_whole()?;
+            let [doc_count, sum_doc_len] = stats.as_ref() else {
+                return Err(OperationError::service_error(
+                    "BM25 stats file must contain doc_count and sum_doc_len",
+                ));
+            };
+            Some(super::Bm25State {
+                document_lengths,
+                stats: super::Bm25Stats {
+                    doc_count: *doc_count,
+                    sum_doc_len: *sum_doc_len,
+                },
+            })
+        } else {
+            None
+        };
+
         // `deleted` length must match `point_to_tokens_count.len()` because it
         // only tracks the index's contents. The id-tracker's deleted mask can
         // be shorter or longer; if shorter, the missing entries default to
@@ -250,6 +342,13 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         // shorter mask just means it doesn't yet know about those higher
         // offsets).
         let total_count = point_to_tokens_count.len()? as usize;
+        if let Some(bm25) = &bm25
+            && bm25.document_lengths.len()? as usize != total_count
+        {
+            return Err(OperationError::service_error(
+                "BM25 document-length count must match point-to-token count",
+            ));
+        }
         let mut deleted = deleted_points.to_owned();
         deleted.resize(total_count, false);
         let compact_deleted_mask = bitor_deleted_mask(
@@ -268,6 +367,7 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
                 postings,
                 vocab,
                 point_to_tokens_count,
+                bm25,
                 deleted_points: deleted,
             },
             compact_deleted_mask,
@@ -318,6 +418,10 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         match &self.storage.postings {
             OnDiskPostingsEnum::Ids(postings) => intersection(postings, tokens, filter),
             OnDiskPostingsEnum::WithPositions(postings) => intersection(postings, tokens, filter),
+            OnDiskPostingsEnum::WithFrequencies(postings) => intersection(postings, tokens, filter),
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                intersection(postings, tokens, filter)
+            }
         }
     }
 
@@ -346,6 +450,10 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         match &self.storage.postings {
             OnDiskPostingsEnum::Ids(postings) => merge(postings, tokens, is_active),
             OnDiskPostingsEnum::WithPositions(postings) => merge(postings, tokens, is_active),
+            OnDiskPostingsEnum::WithFrequencies(postings) => merge(postings, tokens, is_active),
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                merge(postings, tokens, is_active)
+            }
         }
     }
 
@@ -384,6 +492,12 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             OnDiskPostingsEnum::WithPositions(postings) => {
                 check_intersection(postings, tokens, point_id)
             }
+            OnDiskPostingsEnum::WithFrequencies(postings) => {
+                check_intersection(postings, tokens, point_id)
+            }
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                check_intersection(postings, tokens, point_id)
+            }
         }
     }
 
@@ -412,6 +526,10 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         match &self.storage.postings {
             OnDiskPostingsEnum::Ids(postings) => check_any(postings, tokens, point_id),
             OnDiskPostingsEnum::WithPositions(postings) => check_any(postings, tokens, point_id),
+            OnDiskPostingsEnum::WithFrequencies(postings) => check_any(postings, tokens, point_id),
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                check_any(postings, tokens, point_id)
+            }
         }
     }
 
@@ -439,8 +557,22 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
                     .collect())
                 })
             }
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                let unique_tokens = phrase.to_token_set();
+                postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
+                    let Some(selected_postings) = selected_postings else {
+                        return Ok(Vec::new());
+                    };
+                    Ok(intersect_compressed_postings_phrase_iterator(
+                        phrase,
+                        selected_postings,
+                        is_active,
+                    )
+                    .collect())
+                })
+            }
             // cannot do phrase matching if there's no positional information
-            OnDiskPostingsEnum::Ids(_postings) => Ok(Vec::new()),
+            OnDiskPostingsEnum::Ids(_) | OnDiskPostingsEnum::WithFrequencies(_) => Ok(Vec::new()),
         }
     }
 
@@ -460,12 +592,20 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
                 postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
                     // Some token has no posting list -> no match
                     Ok(selected_postings.is_some_and(|selected_postings| {
-                        check_compressed_postings_phrase(phrase, point_id, selected_postings)
+                        check_compressed_postings_phrase(phrase, point_id, &selected_postings)
+                    }))
+                })
+            }
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                let unique_tokens = phrase.to_token_set();
+                postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
+                    Ok(selected_postings.is_some_and(|selected_postings| {
+                        check_compressed_postings_phrase(phrase, point_id, &selected_postings)
                     }))
                 })
             }
             // cannot do phrase matching if there's no positional information
-            OnDiskPostingsEnum::Ids(_postings) => Ok(false),
+            OnDiskPostingsEnum::Ids(_) | OnDiskPostingsEnum::WithFrequencies(_) => Ok(false),
         }
     }
 
@@ -537,6 +677,12 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             OnDiskPostingsEnum::WithPositions(postings) => {
                 run(self, postings, tokens, items, &mut on_match)
             }
+            OnDiskPostingsEnum::WithFrequencies(postings) => {
+                run(self, postings, tokens, items, &mut on_match)
+            }
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                run(self, postings, tokens, items, &mut on_match)
+            }
         }
     }
 
@@ -589,6 +735,12 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             OnDiskPostingsEnum::WithPositions(postings) => {
                 check_any(self, postings, tokens, items, &mut on_match)
             }
+            OnDiskPostingsEnum::WithFrequencies(postings) => {
+                check_any(self, postings, tokens, items, &mut on_match)
+            }
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                check_any(self, postings, tokens, items, &mut on_match)
+            }
         }
     }
 
@@ -598,48 +750,75 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         items: impl Iterator<Item = (U, PointOffsetType)>,
         mut on_match: impl FnMut(U, bool),
     ) -> OperationResult<()> {
-        // Phrase matching needs positional information; without it nothing matches.
-        let OnDiskPostingsEnum::WithPositions(postings) = &self.storage.postings else {
-            for (tag, _) in items {
-                on_match(tag, false);
-            }
-            return Ok(());
-        };
+        fn run<V, S, I, M, U>(
+            index: &OnDiskInvertedIndex<S>,
+            postings: &OnDiskPostings<V, S>,
+            phrase: &Document,
+            items: I,
+            on_match: &mut M,
+        ) -> OperationResult<()>
+        where
+            V: ZerocopyPostingValue + super::PositionalPostingValue,
+            S: UniversalRead,
+            U: UserData,
+            I: Iterator<Item = (U, PointOffsetType)>,
+            M: FnMut(U, bool),
+        {
+            let unique_tokens = phrase.to_token_set();
+            postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
+                for (tag, point_id) in items {
+                    let matched = selected_postings.as_ref().is_some_and(|selected| {
+                        index.is_active(point_id)
+                            && check_compressed_postings_phrase(phrase, point_id, selected)
+                    });
+                    on_match(tag, matched);
+                }
+                Ok(())
+            })
+        }
 
-        let unique_tokens = phrase.to_token_set();
-        // `None` (some token has no posting list) means nothing matches, so every
-        // item reports `false`.
-        postings.with_all_or_none_postings(unique_tokens.tokens(), |selected_postings| {
-            for (tag, point_id) in items {
-                let matched = selected_postings.as_ref().is_some_and(|selected| {
-                    // `PostingListView` is a set of slice refs, so the per-point
-                    // clone only copies references; the postings were loaded once
-                    // above.
-                    self.is_active(point_id)
-                        && check_compressed_postings_phrase(phrase, point_id, selected.clone())
-                });
-                on_match(tag, matched);
+        match &self.storage.postings {
+            OnDiskPostingsEnum::WithPositions(postings) => {
+                run(self, postings, phrase, items, &mut on_match)
             }
-            Ok(())
-        })
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                run(self, postings, phrase, items, &mut on_match)
+            }
+            OnDiskPostingsEnum::Ids(_) | OnDiskPostingsEnum::WithFrequencies(_) => {
+                for (tag, _) in items {
+                    on_match(tag, false);
+                }
+                Ok(())
+            }
+        }
     }
 
     pub fn files(&self) -> Vec<PathBuf> {
-        vec![
+        let mut files = vec![
             self.path.join(POSTINGS_FILE),
             self.path.join(VOCAB_FILE),
             self.path.join(POINT_TO_TOKENS_COUNT_FILE),
             deleted_mask_file(&self.path, self.compact_deleted_mask, DELETED_POINTS_FILE),
-        ]
+        ];
+        if self.storage.bm25.is_some() {
+            files.push(self.path.join(POINT_TO_DOCUMENT_LENGTH_FILE));
+            files.push(self.path.join(BM25_STATS_FILE));
+        }
+        files
     }
 
     pub fn immutable_files(&self) -> Vec<PathBuf> {
-        vec![
+        let mut files = vec![
             self.path.join(POSTINGS_FILE),
             self.path.join(VOCAB_FILE),
             self.path.join(POINT_TO_TOKENS_COUNT_FILE),
             deleted_mask_file(&self.path, self.compact_deleted_mask, DELETED_POINTS_FILE),
-        ]
+        ];
+        if self.storage.bm25.is_some() {
+            files.push(self.path.join(POINT_TO_DOCUMENT_LENGTH_FILE));
+            files.push(self.path.join(BM25_STATS_FILE));
+        }
+        files
     }
 
     /// No-op flusher: the on-disk state is build-time only. See the type-level
@@ -659,6 +838,9 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
         self.storage.postings.populate()?;
         self.storage.vocab.populate()?;
         self.storage.point_to_tokens_count.populate()?;
+        if let Some(bm25) = &self.storage.bm25 {
+            bm25.document_lengths.populate()?;
+        }
         Ok(())
     }
 
@@ -673,11 +855,16 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             postings,
             vocab,
             point_to_tokens_count,
+            bm25,
             deleted_points: _,
         } = storage;
         postings.clear_cache()?;
         vocab.clear_ram_cache()?;
         point_to_tokens_count.clear_ram_cache()?;
+        if let Some(bm25) = bm25 {
+            bm25.document_lengths.clear_ram_cache()?;
+            clear_disk_cache(&path.join(BM25_STATS_FILE))?;
+        }
         clear_disk_cache(&deleted_mask_file(
             path,
             *compact_deleted_mask,
