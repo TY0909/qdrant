@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::bitvec::BitVec;
 use common::counter::hardware_counter::HardwareCounterCell;
@@ -9,11 +10,12 @@ use rstest::rstest;
 use serde_json::Value;
 use tempfile::{Builder, TempDir};
 
-use crate::common::operation_error::OperationResult;
-use crate::data_types::index::TextIndexParams;
+use crate::common::operation_error::{OperationError, OperationResult};
+use crate::data_types::index::{TextIndexBm25Config, TextIndexParams};
 use crate::fixtures::payload_fixtures::random_full_text_payload;
 use crate::index::field_index::field_index_base::{PayloadFieldIndex, PayloadFieldIndexRead};
 use crate::index::field_index::full_text_index::full_text_index_read::FullTextIndexRead;
+use crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring;
 use crate::index::field_index::full_text_index::inverted_index::{
     ARRAY_BOUNDARY_SENTINEL, Document, ParsedQuery, TokenId, TokenSet,
 };
@@ -22,7 +24,7 @@ use crate::index::field_index::full_text_index::on_disk_text_index::FullTextMmap
 use crate::index::field_index::full_text_index::{FullTextGridstoreIndexBuilder, FullTextIndex};
 use crate::index::field_index::{FieldIndexBuilderTrait, ValueIndexer};
 use crate::json_path::JsonPath;
-use crate::types::{FieldCondition, Memory, ValuesCount};
+use crate::types::{FieldCondition, Memory, QueryTokenWeight, QueryTokenWeightSet, ValuesCount};
 
 type Database = ();
 
@@ -449,6 +451,146 @@ fn test_congruence(
             }
         }
     }
+}
+
+#[rstest]
+fn scored_search_is_consistent_across_storage(
+    #[values(false, true)] phrase_matching: bool,
+    #[values(IndexType::Mutable, IndexType::OnDisk, IndexType::Immutable)] index_type: IndexType,
+) {
+    fn build_index(index_type: IndexType, phrase_matching: bool) -> (FullTextIndex, TempDir) {
+        let temp_dir = Builder::new().prefix("scored_text").tempdir().unwrap();
+        let config = TextIndexParams {
+            phrase_matching: Some(phrase_matching),
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1: None,
+                b: None,
+            }),
+            ..TextIndexParams::default()
+        };
+        let deleted = BitVec::new();
+        let mut builder = match index_type {
+            IndexType::Mutable => IndexBuilder::Mutable(FullTextIndex::builder_gridstore(
+                temp_dir.path().to_path_buf(),
+                config,
+            )),
+            IndexType::OnDisk => IndexBuilder::OnDisk(FullTextIndex::builder_mmap(
+                temp_dir.path().to_path_buf(),
+                config,
+                true,
+                &deleted,
+            )),
+            IndexType::Immutable => IndexBuilder::Immutable(FullTextIndex::builder_mmap(
+                temp_dir.path().to_path_buf(),
+                config,
+                false,
+                &deleted,
+            )),
+        };
+        match &mut builder {
+            IndexBuilder::Mutable(builder) => builder.init().unwrap(),
+            IndexBuilder::OnDisk(builder) => builder.init().unwrap(),
+            IndexBuilder::Immutable(builder) => builder.init().unwrap(),
+        }
+
+        let payloads = [
+            (0, "alpha beta beta".to_string()),
+            (1, "alpha gamma".to_string()),
+            (2, "beta beta delta".to_string()),
+            (3, "epsilon".to_string()),
+            (4, vec!["alpha"; 41].join(" ")),
+            (10_002, "alpha zeta".to_string()),
+            (20_005, "beta gamma".to_string()),
+        ];
+        let hw_counter = HardwareCounterCell::new();
+        for (point_id, text) in payloads {
+            let payload = Value::String(text);
+            builder
+                .add_point(point_id, &[&payload], &hw_counter)
+                .unwrap();
+        }
+        (builder.finalize().unwrap(), temp_dir)
+    }
+
+    fn normalized(
+        mut points: Vec<common::types::ScoredPointOffset>,
+    ) -> Vec<(PointOffsetType, u32)> {
+        points.sort_by_key(|point| point.idx);
+        points
+            .into_iter()
+            .map(|point| (point.idx, point.score.to_bits()))
+            .collect()
+    }
+
+    let (reference, _reference_dir) = build_index(IndexType::Mutable, phrase_matching);
+    let (index, _index_dir) = build_index(index_type, phrase_matching);
+    let query = QueryTokenWeightSet::new(vec![
+        QueryTokenWeight::new("alpha".to_string(), 1.0),
+        QueryTokenWeight::new("beta".to_string(), 2.0),
+    ]);
+    let is_stopped = AtomicBool::new(false);
+    let candidates = [0, 2, 3, 4, 10_002, 20_005];
+
+    let reference_results = reference
+        .search_text_index(&query, 10, &is_stopped, |point_id| point_id != 1)
+        .unwrap();
+    let indexed_results = index
+        .search_text_index(&query, 10, &is_stopped, |point_id| point_id != 1)
+        .unwrap();
+    let plain_results = index
+        .search_text_index_plain(&query, 10, &candidates, &is_stopped)
+        .unwrap();
+
+    assert_eq!(
+        normalized(reference_results),
+        normalized(indexed_results.clone())
+    );
+    assert_eq!(normalized(indexed_results), normalized(plain_results));
+
+    let best = index
+        .search_text_index(&query, 1, &is_stopped, |_| true)
+        .unwrap();
+    assert_eq!(best.len(), 1);
+    assert_eq!(best[0].idx, 0);
+
+    is_stopped.store(true, Ordering::Relaxed);
+    assert!(
+        index
+            .search_text_index(&query, 10, &is_stopped, |_| true)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        index
+            .search_text_index_plain(&query, 10, &candidates, &is_stopped)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[rstest]
+fn scored_search_requires_bm25(
+    #[values(IndexType::Mutable, IndexType::OnDisk, IndexType::Immutable)] index_type: IndexType,
+) {
+    let (mut builder, _temp_dir, _db) = create_builder(index_type, false);
+    let payload = Value::String("alpha".to_string());
+    builder
+        .add_point(0, &[&payload], &HardwareCounterCell::new())
+        .unwrap();
+    let index = builder.finalize().unwrap();
+    let query = QueryTokenWeightSet::new(vec![QueryTokenWeight::new("alpha".to_string(), 1.0)]);
+
+    assert!(matches!(
+        index.search_text_index(&query, 1, &AtomicBool::new(false), |_| true),
+        Err(OperationError::ValidationError { .. }),
+    ));
+    assert!(
+        index
+            .search_text_index(&query, 0, &AtomicBool::new(false), |_| true)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Checks that the ids can be found when filtering and matching a phrase.

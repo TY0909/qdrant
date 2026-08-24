@@ -4697,6 +4697,43 @@ pub enum SnapshotFormat {
     Streamable,
 }
 
+/// A token and its inverse-document-frequency contribution for text scoring.
+#[derive(Clone, Debug, Default)]
+pub struct QueryTokenWeight {
+    token: String,
+    idf: f32,
+}
+
+impl QueryTokenWeight {
+    pub fn new(token: String, idf: f32) -> Self {
+        Self { token, idf }
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn idf(&self) -> f32 {
+        self.idf
+    }
+}
+
+/// Token weights resolved before searching individual full-text indexes.
+#[derive(Clone, Debug, Default)]
+pub struct QueryTokenWeightSet {
+    query_tokens: Vec<QueryTokenWeight>,
+}
+
+impl QueryTokenWeightSet {
+    pub fn new(query_tokens: Vec<QueryTokenWeight>) -> Self {
+        Self { query_tokens }
+    }
+
+    pub fn query_tokens(&self) -> &[QueryTokenWeight] {
+        &self.query_tokens
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_utils {
     use super::{GeoLineString, GeoPoint, GeoPolygon};

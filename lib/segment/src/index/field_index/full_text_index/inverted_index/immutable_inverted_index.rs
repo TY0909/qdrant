@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
 
 use ahash::AHashMap;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::UserData;
 use itertools::Either;
 use posting_list::{PostingBuilder, PostingList, PostingListView, PostingValue};
@@ -17,13 +18,50 @@ use super::positions::Positions;
 use super::postings_iterator::{
     intersect_compressed_postings_iterator, merge_compressed_postings_iterator,
 };
+use super::scoring::{
+    Bm25SearchContext, Bm25SearchOptions, CompressedBm25PostingListIter,
+    InMemoryEncodedDocumentLengths, IndexedBm25Posting,
+};
 use super::term_frequency::TermFrequency;
 use super::term_frequency_and_positions::TermFrequencyAndPositions;
-use super::{Document, InvertedIndex, ParsedQuery, TokenId, TokenSet};
+use super::{
+    Bm25Params, Document, InvertedIndex, InvertedIndexScoring, ParsedQuery,
+    TermFrequencyPostingValue, TokenId, TokenSet, bm25_scoring_not_enabled_error,
+};
 use crate::common::operation_error::{OperationError, OperationResult};
+use crate::index::field_index::full_text_index::full_text_index_scoring::FullTextSearchScratchPool;
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
+use crate::types::QueryTokenWeightSet;
+
+fn scoring_postings<'a, V: TermFrequencyPostingValue>(
+    postings: &'a [PostingList<V>],
+    vocab: &HashMap<String, TokenId>,
+    query: &QueryTokenWeightSet,
+) -> Vec<IndexedBm25Posting<CompressedBm25PostingListIter<'a, V>>> {
+    let mut resolved = query
+        .query_tokens()
+        .iter()
+        .filter_map(|query_token| {
+            let token_id = *vocab.get(query_token.token())?;
+            let posting = postings.get(token_id as usize)?;
+            let view = posting.view();
+            let last_id = view.components().last_id.map(|id| id.get());
+            Some((token_id, view, last_id, query_token.idf()))
+        })
+        .collect::<Vec<_>>();
+    resolved.sort_unstable_by_key(|(token_id, _, _, _)| *token_id);
+    resolved
+        .into_iter()
+        .map(|(_, view, last_id, idf)| {
+            IndexedBm25Posting::new(
+                CompressedBm25PostingListIter::new(view.into_iter(), last_id),
+                idf,
+            )
+        })
+        .collect()
+}
 
 /// Collect posting-list views for every token in `token_ids`.
 /// Returns `None` as soon as any token id is out of range.
@@ -49,6 +87,7 @@ pub struct ImmutableInvertedIndex {
     pub(in crate::index::field_index::full_text_index) point_to_tokens_count: Vec<usize>,
     pub(in crate::index::field_index::full_text_index) points_count: usize,
     pub(in crate::index::field_index::full_text_index) bm25: Option<super::ImmutableBm25State>,
+    pub(super) search_scratch_pool: FullTextSearchScratchPool,
 }
 
 impl ImmutableInvertedIndex {
@@ -407,6 +446,135 @@ impl InvertedIndex for ImmutableInvertedIndex {
     }
 }
 
+impl InvertedIndexScoring for ImmutableInvertedIndex {
+    fn search_text_index_plain(
+        &self,
+        query: &QueryTokenWeightSet,
+        params: Bm25Params,
+        top: usize,
+        ordered_prefiltered_points: &[PointOffsetType],
+        is_stopped: &AtomicBool,
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        if top == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(bm25) = &self.bm25 else {
+            return Err(bm25_scoring_not_enabled_error());
+        };
+        let options = Bm25SearchOptions {
+            params,
+            top,
+            is_stopped,
+        };
+
+        fn search<V: TermFrequencyPostingValue>(
+            index: &ImmutableInvertedIndex,
+            postings: &[PostingList<V>],
+            bm25: &super::ImmutableBm25State,
+            query: &QueryTokenWeightSet,
+            options: Bm25SearchOptions<'_>,
+            ordered_prefiltered_points: &[PointOffsetType],
+        ) -> OperationResult<Vec<ScoredPointOffset>> {
+            let Some(context) = Bm25SearchContext::new(
+                scoring_postings(postings, &index.vocab, query),
+                InMemoryEncodedDocumentLengths(&bm25.document_lengths),
+                options.params,
+                bm25.stats,
+                options.top,
+                options.is_stopped,
+            ) else {
+                return Ok(Vec::new());
+            };
+            context.plain_search(
+                &index.search_scratch_pool,
+                ordered_prefiltered_points,
+                |point_id| !index.values_is_empty(point_id),
+            )
+        }
+
+        match &self.postings {
+            ImmutablePostings::WithFrequencies(postings) => search(
+                self,
+                postings,
+                bm25,
+                query,
+                options,
+                ordered_prefiltered_points,
+            ),
+            ImmutablePostings::WithFrequenciesAndPositions(postings) => search(
+                self,
+                postings,
+                bm25,
+                query,
+                options,
+                ordered_prefiltered_points,
+            ),
+            ImmutablePostings::Ids(_) | ImmutablePostings::WithPositions(_) => {
+                Err(bm25_scoring_not_enabled_error())
+            }
+        }
+    }
+
+    fn search_text_index<F>(
+        &self,
+        query: &QueryTokenWeightSet,
+        params: Bm25Params,
+        top: usize,
+        is_stopped: &AtomicBool,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        if top == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(bm25) = &self.bm25 else {
+            return Err(bm25_scoring_not_enabled_error());
+        };
+        let options = Bm25SearchOptions {
+            params,
+            top,
+            is_stopped,
+        };
+
+        fn search<V: TermFrequencyPostingValue>(
+            index: &ImmutableInvertedIndex,
+            postings: &[PostingList<V>],
+            bm25: &super::ImmutableBm25State,
+            query: &QueryTokenWeightSet,
+            options: Bm25SearchOptions<'_>,
+            filter: impl Fn(PointOffsetType) -> bool,
+        ) -> OperationResult<Vec<ScoredPointOffset>> {
+            let Some(context) = Bm25SearchContext::new(
+                scoring_postings(postings, &index.vocab, query),
+                InMemoryEncodedDocumentLengths(&bm25.document_lengths),
+                options.params,
+                bm25.stats,
+                options.top,
+                options.is_stopped,
+            ) else {
+                return Ok(Vec::new());
+            };
+            context.search(&index.search_scratch_pool, |point_id| {
+                !index.values_is_empty(point_id) && filter(point_id)
+            })
+        }
+
+        match &self.postings {
+            ImmutablePostings::WithFrequencies(postings) => {
+                search(self, postings, bm25, query, options, filter)
+            }
+            ImmutablePostings::WithFrequenciesAndPositions(postings) => {
+                search(self, postings, bm25, query, options, filter)
+            }
+            ImmutablePostings::Ids(_) | ImmutablePostings::WithPositions(_) => {
+                Err(bm25_scoring_not_enabled_error())
+            }
+        }
+    }
+}
+
 impl TryFrom<MutableInvertedIndex> for ImmutableInvertedIndex {
     type Error = OperationError;
 
@@ -418,6 +586,7 @@ impl TryFrom<MutableInvertedIndex> for ImmutableInvertedIndex {
             bm25,
             point_to_doc,
             points_count,
+            search_scratch_pool,
         } = index;
 
         let with_frequencies = bm25.is_some();
@@ -471,6 +640,7 @@ impl TryFrom<MutableInvertedIndex> for ImmutableInvertedIndex {
                 .collect(),
             points_count,
             bm25,
+            search_scratch_pool,
         })
     }
 }
@@ -710,6 +880,7 @@ impl<S: common::universal_io::UniversalRead> TryFrom<&OnDiskInvertedIndex<S>>
                     })
                 })
                 .transpose()?,
+            search_scratch_pool: FullTextSearchScratchPool::new(),
         })
     }
 }
@@ -723,6 +894,7 @@ impl ImmutableInvertedIndex {
             point_to_tokens_count,
             points_count: _,
             bm25,
+            search_scratch_pool: _,
         } = self;
 
         let postings_bytes = postings.ram_usage_bytes();

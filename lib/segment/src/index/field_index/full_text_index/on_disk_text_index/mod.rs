@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use common::bitvec::BitVec;
 use common::universal_io::{MmapFile, UniversalRead};
 
+use super::inverted_index::Bm25Params;
 use super::inverted_index::mutable_inverted_index::MutableInvertedIndex;
 use super::inverted_index::on_disk_inverted_index::OnDiskInvertedIndex;
 use super::tokenizers::Tokenizer;
@@ -15,6 +16,7 @@ mod read_ops;
 pub struct OnDiskFullTextIndex<S: UniversalRead = MmapFile> {
     pub(in super::super) inverted_index: OnDiskInvertedIndex<S>,
     pub(in super::super) tokenizer: Tokenizer,
+    pub(super) bm25_params: Option<Bm25Params>,
 }
 
 pub struct FullTextMmapIndexBuilder {

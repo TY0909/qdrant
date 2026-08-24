@@ -1,15 +1,17 @@
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::UserData;
+use std::sync::atomic::AtomicBool;
 
 use super::super::full_text_index_read::FullTextIndexRead;
+use super::super::full_text_index_scoring::FullTextIndexScoring;
 use super::super::inverted_index::{ParsedQuery, TokenId};
 use super::super::tokenizers::Tokenizer;
 use super::MutableFullTextIndex;
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::{CardinalityEstimation, PayloadBlockCondition};
 use crate::index::payload_config::StorageType;
-use crate::types::{FieldCondition, PayloadKeyType};
+use crate::types::{FieldCondition, PayloadKeyType, QueryTokenWeightSet};
 
 impl FullTextIndexRead for MutableFullTextIndex {
     fn tokenizer(&self) -> &Tokenizer {
@@ -91,5 +93,31 @@ impl FullTextIndexRead for MutableFullTextIndex {
 
     fn is_on_disk(&self) -> bool {
         self.inner.is_on_disk()
+    }
+}
+
+impl FullTextIndexScoring for MutableFullTextIndex {
+    fn search_text_index<F>(
+        &self,
+        query: &QueryTokenWeightSet,
+        top: usize,
+        is_stopped: &AtomicBool,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        self.inner.search_text_index(query, top, is_stopped, filter)
+    }
+
+    fn search_text_index_plain(
+        &self,
+        query: &QueryTokenWeightSet,
+        top: usize,
+        ordered_prefiltered_points: &[PointOffsetType],
+        is_stopped: &AtomicBool,
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        self.inner
+            .search_text_index_plain(query, top, ordered_prefiltered_points, is_stopped)
     }
 }

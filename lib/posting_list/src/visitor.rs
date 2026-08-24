@@ -47,6 +47,23 @@ impl<'a, V: PostingValue> PostingVisitor<'a, V> {
         &self.decompressed_chunk
     }
 
+    pub(crate) fn chunk_ids_and_sized_values(
+        &mut self,
+        chunk_idx: usize,
+    ) -> (
+        &[PointOffsetType; CHUNK_LEN],
+        &[crate::SizedTypeFor<V>; CHUNK_LEN],
+    ) {
+        if self.decompressed_chunk_idx != Some(chunk_idx) {
+            self.list
+                .decompress_chunk(chunk_idx, &mut self.decompressed_chunk);
+            self.decompressed_chunk_idx = Some(chunk_idx);
+        }
+
+        let values = &self.list.get_chunk_unchecked(chunk_idx).sized_values;
+        (&self.decompressed_chunk, values)
+    }
+
     /// Returns the first offset whose element id is greater or equal to the given id.
     ///
     /// Returns `None` if there is no such element in the posting list

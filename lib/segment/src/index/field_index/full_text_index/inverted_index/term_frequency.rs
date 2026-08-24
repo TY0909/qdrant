@@ -13,6 +13,10 @@ impl TermFrequency {
             value: zerocopy::little_endian::U32::new(value),
         }
     }
+
+    pub(in crate::index::field_index::full_text_index) fn get(self) -> u32 {
+        self.value.get()
+    }
 }
 
 impl PostingValue for TermFrequency {

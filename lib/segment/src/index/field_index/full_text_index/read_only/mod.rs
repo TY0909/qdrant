@@ -47,6 +47,8 @@ pub enum ReadOnlyFullTextIndex<S: UniversalRead> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
     use common::counter::hardware_counter::HardwareCounterCell;
     use common::universal_io::{MmapFile, ReadOnly, UniversalRead, UniversalReadFileOps};
     use itertools::Itertools as _;
@@ -54,10 +56,13 @@ mod tests {
 
     use super::super::FullTextIndex;
     use super::ReadOnlyFullTextIndex;
-    use crate::data_types::index::{TextIndexParams, TextIndexType, TokenizerType};
+    use crate::data_types::index::{
+        TextIndexBm25Config, TextIndexParams, TextIndexType, TokenizerType,
+    };
+    use crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring;
     use crate::index::field_index::{PayloadFieldIndex, PayloadFieldIndexRead, ValueIndexer};
     use crate::json_path::JsonPath;
-    use crate::types::{FieldCondition, Match};
+    use crate::types::{FieldCondition, Match, QueryTokenWeight, QueryTokenWeightSet};
 
     fn test_config() -> TextIndexParams {
         TextIndexParams {
@@ -73,7 +78,11 @@ mod tests {
             stemmer: None,
             ascii_folding: None,
             enable_hnsw: None,
-            bm25_config: None,
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1: None,
+                b: None,
+            }),
         }
     }
 
@@ -145,5 +154,11 @@ mod tests {
                 .collect_vec(),
             vec![1],
         );
+
+        let query = QueryTokenWeightSet::new(vec![QueryTokenWeight::new("brown".to_string(), 1.0)]);
+        let scored = index
+            .search_text_index(&query, 2, &AtomicBool::new(false), |_| true)
+            .unwrap();
+        assert_eq!(scored.iter().map(|point| point.idx).collect_vec(), [2, 0]);
     }
 }

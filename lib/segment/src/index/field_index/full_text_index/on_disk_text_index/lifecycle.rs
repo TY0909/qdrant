@@ -44,6 +44,7 @@ impl<S: UniversalRead> OnDiskFullTextIndex<S> {
     ) -> OperationResult<Option<Self>> {
         let has_positions = config.phrase_matching == Some(true);
         let has_frequencies = super::super::is_bm25_enabled(&config);
+        let bm25_params = super::super::configured_bm25_params(&config);
         let tokenizer = Tokenizer::new_from_text_index_params(&config);
 
         let inverted_index = OnDiskInvertedIndex::<S>::open(
@@ -57,6 +58,7 @@ impl<S: UniversalRead> OnDiskFullTextIndex<S> {
         Ok(inverted_index.map(|inverted_index| Self {
             inverted_index,
             tokenizer,
+            bm25_params,
         }))
     }
 
@@ -228,6 +230,7 @@ impl FieldIndexBuilderTrait for FullTextMmapIndexBuilder {
         let populate = Populate::from(!is_on_disk);
         let has_positions = config.phrase_matching.unwrap_or_default();
         let has_frequencies = super::super::is_bm25_enabled(&config);
+        let bm25_params = super::super::configured_bm25_params(&config);
         let inverted_index = OnDiskInvertedIndex::open(
             &MmapFs,
             path,
@@ -245,6 +248,7 @@ impl FieldIndexBuilderTrait for FullTextMmapIndexBuilder {
         let on_disk_index = OnDiskFullTextIndex {
             inverted_index,
             tokenizer,
+            bm25_params,
         };
 
         let text_index = if is_on_disk {

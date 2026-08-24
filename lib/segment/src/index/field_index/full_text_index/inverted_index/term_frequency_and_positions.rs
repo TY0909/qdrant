@@ -23,6 +23,10 @@ impl TermFrequencyAndPositions {
             positions: Positions::new(positions),
         }
     }
+
+    pub(in crate::index::field_index::full_text_index) fn term_frequency(&self) -> u32 {
+        self.term_frequency.get()
+    }
 }
 
 impl PostingValue for TermFrequencyAndPositions {

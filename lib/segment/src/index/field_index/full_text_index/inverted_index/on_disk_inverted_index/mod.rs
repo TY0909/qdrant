@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use common::bitvec::{BitSlice, DeletedBitVec};
 use common::counter::hardware_counter::HardwareCounterCell;
@@ -7,7 +8,7 @@ use common::fs::clear_disk_cache;
 use common::generic_consts::Random;
 use common::mmap::{Advice, AdviceSetting, MmapSlice};
 use common::persisted_hashmap::{READ_ENTRY_OVERHEAD, UniversalHashMap, serialize_hashmap};
-use common::types::PointOffsetType;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::{
     CachedReadFs, MmapFile, OkNotFound, OpenOptions, Populate, ReadRange, TypedStorage,
     UniversalRead, UniversalReadFs, UserData,
@@ -23,18 +24,27 @@ use super::positions::Positions;
 use super::postings_iterator::{
     intersect_compressed_postings_iterator, merge_compressed_postings_iterator,
 };
+use super::scoring::{
+    Bm25SearchContext, Bm25SearchOptions, CompressedBm25PostingListIter, IndexedBm25Posting,
+    OnDiskEncodedDocumentLengths,
+};
 use super::term_frequency::TermFrequency;
 use super::term_frequency_and_positions::TermFrequencyAndPositions;
-use super::{InvertedIndex, ParsedQuery, TokenId, TokenSet};
+use super::{
+    Bm25Params, InvertedIndex, InvertedIndexScoring, ParsedQuery, TermFrequencyPostingValue,
+    TokenId, TokenSet, bm25_scoring_not_enabled_error,
+};
 use crate::common::Flusher;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::index::field_index::deleted_mask::{
     bitor_deleted_mask, deleted_mask_file, preopen_deleted_mask, save_deleted_mask,
 };
+use crate::index::field_index::full_text_index::full_text_index_scoring::FullTextSearchScratchPool;
 use crate::index::field_index::full_text_index::inverted_index::Document;
 use crate::index::field_index::full_text_index::inverted_index::postings_iterator::{
     check_compressed_postings_phrase, intersect_compressed_postings_phrase_iterator,
 };
+use crate::types::QueryTokenWeightSet;
 
 mod create_postings;
 mod on_disk_postings;
@@ -72,6 +82,7 @@ pub struct OnDiskInvertedIndex<S: UniversalRead = MmapFile> {
     /// Whether the "no values" mask was read from the compact
     /// `deleted_mask.bin` or the legacy `deleted_points.dat`.
     compact_deleted_mask: bool,
+    search_scratch_pool: FullTextSearchScratchPool,
 }
 
 pub(in crate::index::field_index::full_text_index) struct Storage<S: UniversalRead = MmapFile> {
@@ -105,6 +116,7 @@ impl OnDiskInvertedIndex<MmapFile> {
             point_to_tokens_count,
             points_count: _,
             bm25,
+            search_scratch_pool: _,
         } = inverted_index;
 
         debug_assert_eq!(vocab.len(), postings.len());
@@ -371,6 +383,7 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
                 deleted_points: deleted,
             },
             compact_deleted_mask,
+            search_scratch_pool: FullTextSearchScratchPool::new(),
         }))
     }
 
@@ -850,6 +863,7 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             path,
             storage,
             compact_deleted_mask,
+            search_scratch_pool: _,
         } = self;
         let Storage {
             postings,
@@ -871,6 +885,199 @@ impl<S: UniversalRead> OnDiskInvertedIndex<S> {
             DELETED_POINTS_FILE,
         ))?;
         Ok(())
+    }
+}
+
+impl<S: UniversalRead> InvertedIndexScoring for OnDiskInvertedIndex<S> {
+    fn search_text_index_plain(
+        &self,
+        query: &QueryTokenWeightSet,
+        params: Bm25Params,
+        top: usize,
+        ordered_prefiltered_points: &[PointOffsetType],
+        is_stopped: &AtomicBool,
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        if top == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(bm25) = &self.storage.bm25 else {
+            return Err(bm25_scoring_not_enabled_error());
+        };
+        let token_weights = self.scoring_token_weights(query)?;
+        let options = Bm25SearchOptions {
+            params,
+            top,
+            is_stopped,
+        };
+
+        fn search<V, S>(
+            index: &OnDiskInvertedIndex<S>,
+            postings: &OnDiskPostings<V, S>,
+            bm25: &OnDiskBm25State<S>,
+            token_weights: &HashMap<TokenId, f32>,
+            options: Bm25SearchOptions<'_>,
+            ordered_prefiltered_points: &[PointOffsetType],
+        ) -> OperationResult<Vec<ScoredPointOffset>>
+        where
+            V: ZerocopyPostingValue + TermFrequencyPostingValue,
+            S: UniversalRead,
+        {
+            let mut token_ids = token_weights.keys().copied().collect::<Vec<_>>();
+            token_ids.sort_unstable();
+            postings.with_existing_postings(&token_ids, |mut posting_views| {
+                posting_views.sort_unstable_by_key(|(token_id, _)| *token_id);
+                let scoring_postings = posting_views
+                    .into_iter()
+                    .filter_map(|(token_id, view)| {
+                        let idf = *token_weights.get(&token_id)?;
+                        let last_id = view.components().last_id.map(|id| id.get());
+                        Some(IndexedBm25Posting::new(
+                            CompressedBm25PostingListIter::new(view.into_iter(), last_id),
+                            idf,
+                        ))
+                    })
+                    .collect();
+                let Some(context) = Bm25SearchContext::new(
+                    scoring_postings,
+                    OnDiskEncodedDocumentLengths(&bm25.document_lengths),
+                    options.params,
+                    bm25.stats,
+                    options.top,
+                    options.is_stopped,
+                ) else {
+                    return Ok(Vec::new());
+                };
+                context.plain_search(
+                    &index.search_scratch_pool,
+                    ordered_prefiltered_points,
+                    |point_id| index.is_active(point_id),
+                )
+            })
+        }
+
+        match &self.storage.postings {
+            OnDiskPostingsEnum::WithFrequencies(postings) => search(
+                self,
+                postings,
+                bm25,
+                &token_weights,
+                options,
+                ordered_prefiltered_points,
+            ),
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => search(
+                self,
+                postings,
+                bm25,
+                &token_weights,
+                options,
+                ordered_prefiltered_points,
+            ),
+            OnDiskPostingsEnum::Ids(_) | OnDiskPostingsEnum::WithPositions(_) => {
+                Err(bm25_scoring_not_enabled_error())
+            }
+        }
+    }
+
+    fn search_text_index<F>(
+        &self,
+        query: &QueryTokenWeightSet,
+        params: Bm25Params,
+        top: usize,
+        is_stopped: &AtomicBool,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool,
+    {
+        if top == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(bm25) = &self.storage.bm25 else {
+            return Err(bm25_scoring_not_enabled_error());
+        };
+        let token_weights = self.scoring_token_weights(query)?;
+        let options = Bm25SearchOptions {
+            params,
+            top,
+            is_stopped,
+        };
+
+        fn search<V, S>(
+            index: &OnDiskInvertedIndex<S>,
+            postings: &OnDiskPostings<V, S>,
+            bm25: &OnDiskBm25State<S>,
+            token_weights: &HashMap<TokenId, f32>,
+            options: Bm25SearchOptions<'_>,
+            filter: impl Fn(PointOffsetType) -> bool,
+        ) -> OperationResult<Vec<ScoredPointOffset>>
+        where
+            V: ZerocopyPostingValue + TermFrequencyPostingValue,
+            S: UniversalRead,
+        {
+            let mut token_ids = token_weights.keys().copied().collect::<Vec<_>>();
+            token_ids.sort_unstable();
+            postings.with_existing_postings(&token_ids, |mut posting_views| {
+                posting_views.sort_unstable_by_key(|(token_id, _)| *token_id);
+                let scoring_postings = posting_views
+                    .into_iter()
+                    .filter_map(|(token_id, view)| {
+                        let idf = *token_weights.get(&token_id)?;
+                        let last_id = view.components().last_id.map(|id| id.get());
+                        Some(IndexedBm25Posting::new(
+                            CompressedBm25PostingListIter::new(view.into_iter(), last_id),
+                            idf,
+                        ))
+                    })
+                    .collect();
+                let Some(context) = Bm25SearchContext::new(
+                    scoring_postings,
+                    OnDiskEncodedDocumentLengths(&bm25.document_lengths),
+                    options.params,
+                    bm25.stats,
+                    options.top,
+                    options.is_stopped,
+                ) else {
+                    return Ok(Vec::new());
+                };
+                context.search(&index.search_scratch_pool, |point_id| {
+                    index.is_active(point_id) && filter(point_id)
+                })
+            })
+        }
+
+        match &self.storage.postings {
+            OnDiskPostingsEnum::WithFrequencies(postings) => {
+                search(self, postings, bm25, &token_weights, options, filter)
+            }
+            OnDiskPostingsEnum::WithFrequenciesAndPositions(postings) => {
+                search(self, postings, bm25, &token_weights, options, filter)
+            }
+            OnDiskPostingsEnum::Ids(_) | OnDiskPostingsEnum::WithPositions(_) => {
+                Err(bm25_scoring_not_enabled_error())
+            }
+        }
+    }
+}
+
+impl<S: UniversalRead> OnDiskInvertedIndex<S> {
+    fn scoring_token_weights(
+        &self,
+        query: &QueryTokenWeightSet,
+    ) -> OperationResult<HashMap<TokenId, f32>> {
+        let mut weights = HashMap::with_capacity(query.query_tokens().len());
+        self.storage.vocab.for_each_entry_in_iter(
+            query
+                .query_tokens()
+                .iter()
+                .map(|query_token| (query_token.idf(), query_token.token())),
+            |idf, token_ids| {
+                if let Some(token_ids) = token_ids {
+                    weights.insert(unwrap_token(token_ids), idf);
+                }
+                OperationResult::Ok(())
+            },
+        )?;
+        Ok(weights)
     }
 }
 

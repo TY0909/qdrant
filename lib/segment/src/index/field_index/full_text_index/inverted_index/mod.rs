@@ -7,23 +7,107 @@ pub(super) mod on_disk_inverted_index;
 mod positions;
 mod posting_list;
 mod postings_iterator;
+mod scoring;
 mod term_frequency;
 mod term_frequency_and_positions;
 
 use std::cmp::min;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 
+use ::posting_list::PostingValue;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::UserData;
 use itertools::Itertools;
 
-use crate::common::operation_error::OperationResult;
+use crate::common::operation_error::{OperationError, OperationResult};
+use crate::data_types::index::TextIndexBm25Config;
 use crate::index::field_index::{CardinalityEstimation, PayloadBlockCondition, PrimaryCondition};
 use crate::index::query_estimator::expected_should_estimation;
-use crate::types::{FieldCondition, Match, PayloadKeyType};
+use crate::types::{FieldCondition, Match, PayloadKeyType, QueryTokenWeightSet};
 
 pub type TokenId = u32;
+
+pub(super) trait TermFrequencyPostingValue: PostingValue {
+    fn term_frequency(&self) -> u32;
+
+    fn for_each_till_id(
+        iterator: &mut ::posting_list::PostingIterator<'_, Self>,
+        last_id: PointOffsetType,
+        f: impl FnMut(::posting_list::PostingElement<Self>),
+    ) where
+        Self: Sized;
+}
+
+impl TermFrequencyPostingValue for term_frequency::TermFrequency {
+    fn term_frequency(&self) -> u32 {
+        (*self).get()
+    }
+
+    fn for_each_till_id(
+        iterator: &mut ::posting_list::PostingIterator<'_, Self>,
+        last_id: PointOffsetType,
+        f: impl FnMut(::posting_list::PostingElement<Self>),
+    ) {
+        iterator.for_each_till_id_sized(last_id, f);
+    }
+}
+
+impl TermFrequencyPostingValue for term_frequency_and_positions::TermFrequencyAndPositions {
+    fn term_frequency(&self) -> u32 {
+        self.term_frequency()
+    }
+
+    fn for_each_till_id(
+        iterator: &mut ::posting_list::PostingIterator<'_, Self>,
+        last_id: PointOffsetType,
+        f: impl FnMut(::posting_list::PostingElement<Self>),
+    ) {
+        iterator.for_each_till_id(last_id, f);
+    }
+}
+
+pub(super) trait InvertedIndexScoring {
+    fn search_text_index_plain(
+        &self,
+        query: &QueryTokenWeightSet,
+        params: Bm25Params,
+        top: usize,
+        ordered_prefiltered_points: &[PointOffsetType],
+        is_stopped: &AtomicBool,
+    ) -> OperationResult<Vec<ScoredPointOffset>>;
+
+    fn search_text_index<F>(
+        &self,
+        query: &QueryTokenWeightSet,
+        params: Bm25Params,
+        top: usize,
+        is_stopped: &AtomicBool,
+        filter: F,
+    ) -> OperationResult<Vec<ScoredPointOffset>>
+    where
+        F: Fn(PointOffsetType) -> bool;
+}
+
+pub(super) fn bm25_scoring_not_enabled_error() -> OperationError {
+    OperationError::validation_error("BM25 scoring is not enabled for this full-text index")
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Bm25Params {
+    pub(super) k1: f64,
+    pub(super) b: f64,
+}
+
+impl From<&TextIndexBm25Config> for Bm25Params {
+    fn from(config: &TextIndexBm25Config) -> Self {
+        Self {
+            k1: config.k1(),
+            b: config.b(),
+        }
+    }
+}
 
 pub(super) trait PositionalPostingValue {
     fn is_empty(&self) -> bool;
@@ -63,6 +147,10 @@ impl Bm25Stats {
         }
         self.doc_count = self.doc_count.saturating_sub(1);
         self.sum_doc_len = self.sum_doc_len.saturating_sub(u64::from(document_length));
+    }
+
+    pub(super) fn average_document_length(self) -> Option<f64> {
+        (self.doc_count != 0).then(|| self.sum_doc_len as f64 / self.doc_count as f64)
     }
 }
 

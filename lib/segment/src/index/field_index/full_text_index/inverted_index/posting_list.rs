@@ -140,6 +140,13 @@ impl PostingList {
         .flatten()
     }
 
+    pub(super) fn frequencies(&self) -> Option<&[FrequencyPostingElement]> {
+        match self {
+            Self::Ids(_) => None,
+            Self::WithFrequencies(list) => Some(&list.0),
+        }
+    }
+
     pub fn heap_bytes(&self) -> usize {
         match self {
             // Approximate heap usage with serialized size.
