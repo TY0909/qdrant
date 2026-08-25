@@ -12,7 +12,10 @@ use crate::common::operation_error::OperationResult;
 use crate::data_types::facets::{FacetParams, FacetValue};
 use crate::data_types::named_vectors::NamedVectors;
 use crate::data_types::order_by::{OrderBy, OrderValue};
-use crate::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
+use crate::data_types::query_context::{
+    FormulaContext, PayloadTextIndexStats, PayloadTextSearchContext, QueryContext,
+    SegmentQueryContext,
+};
 use crate::data_types::segment_record::{SegmentRecord, SegmentRecordRaw};
 use crate::data_types::vectors::{QueryVector, VectorInternal};
 use crate::entry::entry_point::ReadSegmentEntry;
@@ -73,6 +76,14 @@ impl<S: UniversalReadExt + 'static> ReadSegmentEntry for ReadOnlySegment<S> {
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<Vec<ScoredPoint>> {
         self.with_view(|view| view.rescore_with_formula(ctx, hw_counter))
+    }
+
+    fn search_payload_text(
+        &self,
+        ctx: Arc<PayloadTextSearchContext>,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        self.with_view(|view| view.search_payload_text(ctx, hw_counter))
     }
 
     fn vector(
@@ -328,6 +339,19 @@ impl<S: UniversalReadExt + 'static> ReadSegmentEntry for ReadOnlySegment<S> {
 
     fn fill_query_context(&self, query_context: &mut QueryContext) -> OperationResult<()> {
         self.with_view(|view| view.fill_query_context(query_context))
+    }
+
+    fn payload_text_stats(
+        &self,
+        key: &JsonPath,
+        query_str: &str,
+        corpus: Option<&Filter>,
+        is_stopped: &AtomicBool,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<PayloadTextIndexStats> {
+        self.with_view(|view| {
+            view.payload_text_stats(key, query_str, corpus, is_stopped, hw_counter)
+        })
     }
 
     fn point_is_deferred(&self, point_id: PointIdType) -> bool {

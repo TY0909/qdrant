@@ -11,7 +11,8 @@ use sparse::common::types::{DimId, DimWeight};
 
 use crate::data_types::tiny_map;
 use crate::index::query_optimization::rescore_formula::parsed_formula::ParsedFormula;
-use crate::types::{Filter, ScoredPoint, VectorName, VectorNameBuf};
+use crate::json_path::JsonPath;
+use crate::types::{Filter, QueryTokenWeightSet, ScoredPoint, VectorName, VectorNameBuf};
 
 #[derive(Debug, Default)]
 pub struct QueryIdfStats {
@@ -226,6 +227,14 @@ impl<'a> SegmentQueryContext<'a> {
         self.query_context.is_stopped()
     }
 
+    pub fn is_stopped_handle(&self) -> Arc<AtomicBool> {
+        self.query_context.is_stopped_handle()
+    }
+
+    pub fn hardware_counter(&self) -> HardwareCounterCell {
+        self.hardware_counter.fork()
+    }
+
     pub fn fork(&self) -> Self {
         Self {
             query_context: self.query_context,
@@ -323,4 +332,33 @@ pub struct FormulaContext {
     pub limit: usize,
     pub score_threshold: Option<ScoreType>,
     pub is_stopped: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct PayloadTextSearchContext {
+    pub key: JsonPath,
+    pub query: QueryTokenWeightSet,
+    pub filter: Option<Filter>,
+    pub top: usize,
+    pub is_stopped: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+pub struct PayloadTextIndexStats {
+    pub tokens: Vec<String>,
+    pub document_count: usize,
+    pub sum_document_length: u64,
+    pub document_frequencies: Vec<usize>,
+}
+
+impl PayloadTextIndexStats {
+    pub fn new(tokens: Vec<String>) -> Self {
+        let token_count = tokens.len();
+        Self {
+            tokens,
+            document_count: 0,
+            sum_document_length: 0,
+            document_frequencies: vec![0; token_count],
+        }
+    }
 }

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -13,7 +14,10 @@ use segment::data_types::build_index_result::BuildFieldIndexResult;
 use segment::data_types::facets::{FacetParams, FacetValue};
 use segment::data_types::named_vectors::NamedVectors;
 use segment::data_types::order_by::OrderValue;
-use segment::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
+use segment::data_types::query_context::{
+    FormulaContext, PayloadTextIndexStats, PayloadTextSearchContext, QueryContext,
+    SegmentQueryContext,
+};
 use segment::data_types::segment_record::{SegmentRecord, SegmentRecordRaw};
 use segment::data_types::vector_name_config::VectorNameConfig;
 use segment::data_types::vectors::{QueryVector, VectorInternal};
@@ -29,6 +33,31 @@ use super::{ProxyDeletedPoint, ProxyIndexChange, ProxySegment};
 use crate::locked_segment::LockedSegment;
 
 impl ProxySegment {
+    fn is_bm25_schema(schema: &PayloadFieldSchema) -> bool {
+        matches!(
+            schema.expand().as_ref(),
+            PayloadSchemaParams::Text(params)
+                if params
+                    .bm25_config
+                    .as_ref()
+                    .is_some_and(|config| config.is_enabled())
+        )
+    }
+
+    fn is_payload_index_stale(&self, key: &JsonPath) -> bool {
+        let Some(change) = self.changed_indexes.get(key) else {
+            return false;
+        };
+        let wrapped_schema = self.wrapped_segment.get().read().get_indexed_fields();
+        match change {
+            ProxyIndexChange::Create(schema, _) => wrapped_schema.get(key) != Some(schema),
+            ProxyIndexChange::Delete(_) => true,
+            ProxyIndexChange::DeleteIfIncompatible(_, schema) => {
+                wrapped_schema.get(key) != Some(schema)
+            }
+        }
+    }
+
     /// Shared preamble of `retrieve` and `retrieve_raw`: strip any vector
     /// names that the proxy intends to delete or replace with a different
     /// schema, and drop proxy-deleted points, before delegating to the
@@ -258,6 +287,36 @@ impl ReadSegmentEntry for ProxySegment {
         };
 
         Ok(result)
+    }
+
+    fn search_payload_text(
+        &self,
+        ctx: Arc<PayloadTextSearchContext>,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Vec<ScoredPoint>> {
+        if self.is_payload_index_stale(&ctx.key) {
+            return Ok(vec![]);
+        }
+
+        let mut ctx = (*ctx).clone();
+        ctx.filter = ctx
+            .filter
+            .as_ref()
+            .map(|filter| self.changed_vector_names.redact_filter(filter).into_owned());
+        let ctx = if self.deleted_points.is_empty() {
+            Arc::new(ctx)
+        } else {
+            ctx.filter = Some(Self::add_deleted_points_condition_to_filter(
+                ctx.filter.map(Cow::Owned),
+                self.deleted_points.keys().copied(),
+            ));
+            Arc::new(ctx)
+        };
+
+        self.wrapped_segment
+            .get()
+            .read()
+            .search_payload_text(ctx, hw_counter)
     }
 
     fn vector(
@@ -753,6 +812,39 @@ impl ReadSegmentEntry for ProxySegment {
             .fill_query_context(query_context)
     }
 
+    fn payload_text_stats(
+        &self,
+        key: &JsonPath,
+        query_str: &str,
+        corpus: Option<&Filter>,
+        is_stopped: &AtomicBool,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<PayloadTextIndexStats> {
+        if self.is_payload_index_stale(key) {
+            return Ok(PayloadTextIndexStats::default());
+        }
+        let corpus = corpus.cloned().unwrap_or_default();
+        let corpus = self
+            .changed_vector_names
+            .redact_filter(&corpus)
+            .into_owned();
+        let corpus = if self.deleted_points.is_empty() {
+            corpus
+        } else {
+            Self::add_deleted_points_condition_to_filter(
+                Some(Cow::Owned(corpus)),
+                self.deleted_points.keys().copied(),
+            )
+        };
+        self.wrapped_segment.get().read().payload_text_stats(
+            key,
+            query_str,
+            Some(&corpus),
+            is_stopped,
+            hw_counter,
+        )
+    }
+
     fn point_is_deferred(&self, point_id: PointIdType) -> bool {
         !self.deleted_points.contains_key(&point_id)
             && self
@@ -1011,6 +1103,14 @@ impl NonAppendableSegmentEntry for ProxySegment {
 
         self.version = cmp::max(self.version, op_num);
 
+        let wrapped_schema = self.wrapped_segment.get().read().get_indexed_fields();
+        if wrapped_schema.get(key).is_some_and(Self::is_bm25_schema) {
+            self.wrapped_segment
+                .get()
+                .write()
+                .delete_field_index(op_num, key)?;
+        }
+
         // Store index change to later propagate to optimized/wrapped segment
         self.changed_indexes
             .insert(key.clone(), ProxyIndexChange::Delete(op_num));
@@ -1030,6 +1130,17 @@ impl NonAppendableSegmentEntry for ProxySegment {
 
         self.version = cmp::max(self.version, op_num);
 
+        let wrapped_schema = self.wrapped_segment.get().read().get_indexed_fields();
+        if wrapped_schema
+            .get(key)
+            .is_some_and(|schema| Self::is_bm25_schema(schema) && schema != field_schema)
+        {
+            self.wrapped_segment
+                .get()
+                .write()
+                .delete_field_index_if_incompatible(op_num, key, field_schema)?;
+        }
+
         self.changed_indexes.insert(
             key.clone(),
             ProxyIndexChange::DeleteIfIncompatible(op_num, field_schema.clone()),
@@ -1041,16 +1152,24 @@ impl NonAppendableSegmentEntry for ProxySegment {
     fn build_field_index(
         &self,
         op_num: SeqNumberType,
-        _key: PayloadKeyTypeRef,
+        key: PayloadKeyTypeRef,
         field_type: &PayloadFieldSchema,
-        _hw_counter: &HardwareCounterCell,
+        hw_counter: &HardwareCounterCell,
     ) -> OperationResult<BuildFieldIndexResult> {
         if self.version() > op_num {
             return Ok(BuildFieldIndexResult::SkippedByVersion);
         }
 
+        if Self::is_bm25_schema(field_type) {
+            return self
+                .wrapped_segment
+                .get()
+                .read()
+                .build_field_index(op_num, key, field_type, hw_counter);
+        }
+
         Ok(BuildFieldIndexResult::Built {
-            indexes: vec![], // No actual index is built in proxy segment, they will be created later
+            indexes: vec![],
             schema: field_type.clone(),
         })
     }
@@ -1060,13 +1179,22 @@ impl NonAppendableSegmentEntry for ProxySegment {
         op_num: SeqNumberType,
         key: PayloadKeyType,
         field_schema: PayloadFieldSchema,
-        _field_index: Vec<FieldIndex>,
+        field_index: Vec<FieldIndex>,
     ) -> OperationResult<bool> {
         if self.version() > op_num {
             return Ok(false);
         }
 
         self.version = cmp::max(self.version, op_num);
+
+        if Self::is_bm25_schema(&field_schema) {
+            self.wrapped_segment.get().write().apply_field_index(
+                op_num,
+                key.clone(),
+                field_schema.clone(),
+                field_index,
+            )?;
+        }
 
         // Store index change to later propagate to optimized/wrapped segment
         self.changed_indexes

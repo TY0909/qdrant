@@ -386,6 +386,10 @@ pub struct ProxyIndexChanges {
 }
 
 impl ProxyIndexChanges {
+    pub fn get(&self, key: &PayloadKeyType) -> Option<&ProxyIndexChange> {
+        self.changes.get(key)
+    }
+
     pub fn insert(&mut self, key: PayloadKeyType, change: ProxyIndexChange) {
         self.changes.insert(key, change);
     }

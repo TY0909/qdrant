@@ -80,6 +80,17 @@ impl LoadProfile {
         }
     }
 
+    /// Profile of a payload-index scoring query.
+    pub fn for_payload_search(key: &JsonPath, filter: Option<&Filter>, with_payload: bool) -> Self {
+        let mut warm_payload_fields = filter_payload_keys(filter);
+        warm_payload_fields.insert(key.clone());
+        Self {
+            warm_vectors: HashSet::new(),
+            warm_payload_fields,
+            warm_payload_storage: with_payload || filter.is_some(),
+        }
+    }
+
     /// Profile of a retrieve by ids: a handful of point-level random reads, everything
     /// serves fine cold.
     pub fn for_retrieve() -> Self {
