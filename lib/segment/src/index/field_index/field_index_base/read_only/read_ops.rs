@@ -309,4 +309,26 @@ impl<S: UniversalReadExt> FieldIndexRead for ReadOnlyFieldIndex<S> {
             | ReadOnlyFieldIndex::NullIndex(_) => None,
         }
     }
+
+    fn as_full_text_index(
+        &self,
+    ) -> Option<
+        &(impl FullTextIndexRead
+        + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
+        + '_),
+    > {
+        match self {
+            ReadOnlyFieldIndex::FullTextIndex(index) => Some(index),
+            ReadOnlyFieldIndex::IntIndex(_)
+            | ReadOnlyFieldIndex::DatetimeIndex(_)
+            | ReadOnlyFieldIndex::IntMapIndex(_)
+            | ReadOnlyFieldIndex::KeywordIndex(_)
+            | ReadOnlyFieldIndex::FloatIndex(_)
+            | ReadOnlyFieldIndex::BoolIndex(_)
+            | ReadOnlyFieldIndex::GeoIndex(_)
+            | ReadOnlyFieldIndex::UuidIndex(_)
+            | ReadOnlyFieldIndex::UuidMapIndex(_)
+            | ReadOnlyFieldIndex::NullIndex(_) => None,
+        }
+    }
 }

@@ -159,6 +159,7 @@ pub(super) struct IndexedBm25Posting<I> {
 #[derive(Clone, Copy)]
 pub(super) struct Bm25SearchOptions<'a> {
     pub(super) params: Bm25Params,
+    pub(super) average_document_length: Option<f64>,
     pub(super) top: usize,
     pub(super) is_stopped: &'a AtomicBool,
 }
@@ -332,8 +333,14 @@ struct Bm25TermScorer {
 }
 
 impl Bm25TermScorer {
-    fn new(params: Bm25Params, stats: Bm25Stats) -> Option<Self> {
-        let average_document_length = stats.average_document_length()?;
+    fn new(
+        params: Bm25Params,
+        stats: Bm25Stats,
+        average_document_length: Option<f64>,
+    ) -> Option<Self> {
+        let average_document_length = average_document_length
+            .filter(|average| average.is_finite() && *average > 0.0)
+            .or_else(|| stats.average_document_length())?;
         let k1 = params.k1;
         let b = params.b;
         let norm_inverses = std::array::from_fn(|encoded| {
@@ -370,13 +377,14 @@ where
         document_lengths: L,
         params: Bm25Params,
         stats: Bm25Stats,
+        average_document_length: Option<f64>,
         top: usize,
         is_stopped: &'a AtomicBool,
     ) -> Option<Self> {
         Some(Self {
             postings,
             document_lengths,
-            term_scorer: Bm25TermScorer::new(params, stats)?,
+            term_scorer: Bm25TermScorer::new(params, stats, average_document_length)?,
             top,
             is_stopped,
         })
@@ -517,6 +525,7 @@ mod tests {
                 doc_count: 2,
                 sum_doc_len: 10,
             },
+            None,
         )
         .unwrap();
 
@@ -524,5 +533,22 @@ mod tests {
         let long = EncodedDocumentLength::new(8).encoded();
         assert!(scorer.score(1.0, 1, short) > scorer.score(1.0, 1, long));
         assert!(scorer.score(1.0, 2, short) > scorer.score(1.0, 1, short));
+    }
+
+    #[test]
+    fn term_score_accepts_query_average_document_length() {
+        let stats = Bm25Stats {
+            doc_count: 2,
+            sum_doc_len: 10,
+        };
+        let local = Bm25TermScorer::new(Bm25Params { k1: 1.2, b: 0.75 }, stats, None).unwrap();
+        let global =
+            Bm25TermScorer::new(Bm25Params { k1: 1.2, b: 0.75 }, stats, Some(20.0)).unwrap();
+        let document_length = EncodedDocumentLength::new(10).encoded();
+
+        assert_ne!(
+            local.score(1.0, 1, document_length),
+            global.score(1.0, 1, document_length),
+        );
     }
 }

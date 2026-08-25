@@ -593,6 +593,96 @@ fn scored_search_requires_bm25(
     );
 }
 
+#[rstest]
+fn test_array_boundaries_do_not_change_bm25_score(
+    #[values(IndexType::Mutable, IndexType::OnDisk, IndexType::Immutable)] index_type: IndexType,
+    #[values(false, true)] reopen: bool,
+) {
+    fn score(index_type: IndexType, phrase_matching: bool, reopen: bool) -> f32 {
+        let temp_dir = Builder::new().prefix("test_dir").tempdir().unwrap();
+        let config = TextIndexParams {
+            phrase_matching: Some(phrase_matching),
+            bm25_config: Some(TextIndexBm25Config {
+                enable: Some(true),
+                k1: None,
+                b: None,
+            }),
+            ..TextIndexParams::default()
+        };
+        let deleted = BitVec::new();
+        let mut builder = match index_type {
+            IndexType::Mutable => IndexBuilder::Mutable(FullTextIndex::builder_gridstore(
+                temp_dir.path().to_path_buf(),
+                config.clone(),
+            )),
+            IndexType::OnDisk => IndexBuilder::OnDisk(FullTextIndex::builder_mmap(
+                temp_dir.path().to_path_buf(),
+                config.clone(),
+                true,
+                &deleted,
+            )),
+            IndexType::Immutable => IndexBuilder::Immutable(FullTextIndex::builder_mmap(
+                temp_dir.path().to_path_buf(),
+                config.clone(),
+                false,
+                &deleted,
+            )),
+        };
+        match &mut builder {
+            IndexBuilder::Mutable(builder) => builder.init().unwrap(),
+            IndexBuilder::OnDisk(builder) => builder.init().unwrap(),
+            IndexBuilder::Immutable(builder) => builder.init().unwrap(),
+        }
+        let payload = Value::Array(vec![
+            Value::String("alpha".to_string()),
+            Value::String("beta".to_string()),
+        ]);
+        builder
+            .add_point(0, &[&payload], &HardwareCounterCell::new())
+            .unwrap();
+
+        let mut index = builder.finalize().unwrap();
+        index.flusher()().unwrap();
+        if reopen {
+            drop(index);
+            index = match index_type {
+                IndexType::Mutable => {
+                    FullTextIndex::new_gridstore(temp_dir.path().to_path_buf(), config, false)
+                        .unwrap()
+                        .unwrap()
+                }
+                IndexType::OnDisk => FullTextIndex::new_mmap(
+                    temp_dir.path().to_path_buf(),
+                    config,
+                    Memory::Cold,
+                    &deleted,
+                )
+                .unwrap()
+                .unwrap(),
+                IndexType::Immutable => FullTextIndex::new_mmap(
+                    temp_dir.path().to_path_buf(),
+                    config,
+                    Memory::Pinned,
+                    &deleted,
+                )
+                .unwrap()
+                .unwrap(),
+            };
+        }
+
+        let query = QueryTokenWeightSet::new(vec![QueryTokenWeight::new("alpha".to_string(), 1.0)]);
+        index
+            .search_text_index(&query, 1, &AtomicBool::new(false), |_| true)
+            .unwrap()[0]
+            .score
+    }
+
+    assert_eq!(
+        score(index_type, false, reopen).to_bits(),
+        score(index_type, true, reopen).to_bits(),
+    );
+}
+
 /// Checks that the ids can be found when filtering and matching a phrase.
 ///
 /// Returns the phrases that were used

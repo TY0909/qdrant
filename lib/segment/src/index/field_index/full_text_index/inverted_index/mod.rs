@@ -580,6 +580,12 @@ pub trait InvertedIndex {
 
     fn points_count(&self) -> usize;
 
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>>;
+
     /// Resolve token -> token_id and call the closure for each token_id.
     fn for_each_token_id<'a, U: UserData>(
         &self,

@@ -365,6 +365,17 @@ impl InvertedIndex for MutableInvertedIndex {
         self.points_count
     }
 
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        _hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>> {
+        Ok(self
+            .bm25
+            .as_ref()
+            .and_then(|bm25| bm25.document_lengths.get(point_id as usize).copied()))
+    }
+
     fn for_each_token_id<'a, U: UserData>(
         &self,
         tokens: impl Iterator<Item = (U, &'a str)>,
@@ -453,6 +464,7 @@ impl MutableInvertedIndex {
             ExactDocumentLengths(&bm25.document_lengths),
             params,
             bm25.stats,
+            query.average_document_length(),
             top,
             is_stopped,
         ))

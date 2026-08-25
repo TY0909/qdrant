@@ -8,6 +8,8 @@ use common::generic_consts::AccessPattern;
 use common::types::{DeferredBehavior, PointOffsetType, ScoreType};
 use serde_json::Value;
 
+use super::field_index::full_text_index::full_text_index_read::FullTextIndexRead;
+use super::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring;
 use super::field_index::numeric_index::NumericFieldIndexRead;
 use super::field_index::{FacetIndex, FieldIndex};
 use super::query_optimization::rescore_formula::FormulaScorer;
@@ -93,6 +95,12 @@ pub trait PayloadIndexRead {
     /// Used by faceting to enumerate values and per-value point sets. The
     /// concrete facet-index type is opaque per implementation.
     fn facet_index_for(&self, key: &JsonPath) -> Option<impl FacetIndex + '_>;
+
+    /// Look up a full-text index for the given payload key, if one exists.
+    fn full_text_index_for(
+        &self,
+        key: &JsonPath,
+    ) -> Option<&(impl FullTextIndexRead + FullTextIndexScoring + '_)>;
 
     /// Per-field-index telemetry data.
     fn get_telemetry_data(&self) -> OperationResult<Vec<PayloadIndexTelemetry>>;

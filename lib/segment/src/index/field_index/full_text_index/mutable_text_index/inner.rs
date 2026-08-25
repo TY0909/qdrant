@@ -45,6 +45,14 @@ impl FullTextIndexRead for MutableFullTextIndexInner {
         self.inverted_index.points_count()
     }
 
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>> {
+        self.inverted_index.document_length(point_id, hw_counter)
+    }
+
     fn values_count(&self, point_id: PointOffsetType) -> usize {
         self.inverted_index.values_count(point_id)
     }
@@ -60,6 +68,14 @@ impl FullTextIndexRead for MutableFullTextIndexInner {
         f: impl FnMut(U, Option<TokenId>),
     ) -> OperationResult<()> {
         self.inverted_index.for_each_token_id(iter, hw_counter, f)
+    }
+
+    fn get_posting_len(
+        &self,
+        token_id: TokenId,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<usize>> {
+        self.inverted_index.get_posting_len(token_id, hw_counter)
     }
 
     fn filter_query<'a>(

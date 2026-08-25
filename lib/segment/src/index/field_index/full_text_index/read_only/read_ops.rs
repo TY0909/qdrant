@@ -49,6 +49,18 @@ impl<S: UniversalRead> FullTextIndexRead for ReadOnlyFullTextIndex<S> {
         }
     }
 
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>> {
+        match self {
+            ReadOnlyFullTextIndex::Appendable(index) => index.document_length(point_id, hw_counter),
+            ReadOnlyFullTextIndex::OnDisk(index) => index.document_length(point_id, hw_counter),
+            ReadOnlyFullTextIndex::Immutable(index) => index.document_length(point_id, hw_counter),
+        }
+    }
+
     fn values_count(&self, point_id: PointOffsetType) -> usize {
         match self {
             ReadOnlyFullTextIndex::Appendable(index) => index.values_count(point_id),
@@ -77,6 +89,18 @@ impl<S: UniversalRead> FullTextIndexRead for ReadOnlyFullTextIndex<S> {
             }
             ReadOnlyFullTextIndex::OnDisk(index) => index.for_each_token_id(iter, hw_counter, f),
             ReadOnlyFullTextIndex::Immutable(index) => index.for_each_token_id(iter, hw_counter, f),
+        }
+    }
+
+    fn get_posting_len(
+        &self,
+        token_id: TokenId,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<usize>> {
+        match self {
+            ReadOnlyFullTextIndex::Appendable(index) => index.get_posting_len(token_id, hw_counter),
+            ReadOnlyFullTextIndex::OnDisk(index) => index.get_posting_len(token_id, hw_counter),
+            ReadOnlyFullTextIndex::Immutable(index) => index.get_posting_len(token_id, hw_counter),
         }
     }
 

@@ -112,6 +112,19 @@ where
             .and_then(|index| index.iter().find_map(|index| index.as_facet_index()))
     }
 
+    fn full_text_index_for(
+        &self,
+        key: &JsonPath,
+    ) -> Option<
+        &(impl crate::index::field_index::full_text_index::full_text_index_read::FullTextIndexRead
+        + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
+        + '_),
+    > {
+        self.field_indexes
+            .get(key)
+            .and_then(|indexes| indexes.iter().find_map(|index| index.as_full_text_index()))
+    }
+
     fn formula_scorer<'q>(
         &'q self,
         parsed_formula: &'q ParsedFormula,

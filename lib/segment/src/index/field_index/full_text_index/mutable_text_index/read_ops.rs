@@ -27,6 +27,14 @@ impl FullTextIndexRead for MutableFullTextIndex {
         self.inner.points_count()
     }
 
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>> {
+        self.inner.document_length(point_id, hw_counter)
+    }
+
     fn values_count(&self, point_id: PointOffsetType) -> usize {
         self.inner.values_count(point_id)
     }
@@ -42,6 +50,14 @@ impl FullTextIndexRead for MutableFullTextIndex {
         f: impl FnMut(U, Option<TokenId>),
     ) -> OperationResult<()> {
         self.inner.for_each_token_id(iter, hw_counter, f)
+    }
+
+    fn get_posting_len(
+        &self,
+        token_id: TokenId,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<usize>> {
+        self.inner.get_posting_len(token_id, hw_counter)
     }
 
     fn filter_query<'a>(

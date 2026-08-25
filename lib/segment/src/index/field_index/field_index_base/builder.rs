@@ -49,6 +49,7 @@ pub trait FieldIndexBuilderTrait {
 }
 
 /// Builders for all index types
+#[allow(clippy::large_enum_variant)]
 pub enum FieldIndexBuilder {
     IntMmapIndex(NumericIndexMmapBuilder<IntPayloadType, IntPayloadType>),
     IntGridstoreIndex(NumericIndexGridstoreBuilder<IntPayloadType, IntPayloadType>),

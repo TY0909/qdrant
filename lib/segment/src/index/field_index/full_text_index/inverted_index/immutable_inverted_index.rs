@@ -435,6 +435,19 @@ impl InvertedIndex for ImmutableInvertedIndex {
         self.points_count
     }
 
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        _hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>> {
+        Ok(self.bm25.as_ref().and_then(|bm25| {
+            bm25.document_lengths
+                .get(point_id as usize)
+                .copied()
+                .map(|length| EncodedDocumentLength::from_encoded(length).decoded())
+        }))
+    }
+
     fn for_each_token_id<'a, U: UserData>(
         &self,
         tokens: impl Iterator<Item = (U, &'a str)>,
@@ -463,6 +476,7 @@ impl InvertedIndexScoring for ImmutableInvertedIndex {
         };
         let options = Bm25SearchOptions {
             params,
+            average_document_length: query.average_document_length(),
             top,
             is_stopped,
         };
@@ -480,6 +494,7 @@ impl InvertedIndexScoring for ImmutableInvertedIndex {
                 InMemoryEncodedDocumentLengths(&bm25.document_lengths),
                 options.params,
                 bm25.stats,
+                options.average_document_length,
                 options.top,
                 options.is_stopped,
             ) else {
@@ -534,6 +549,7 @@ impl InvertedIndexScoring for ImmutableInvertedIndex {
         };
         let options = Bm25SearchOptions {
             params,
+            average_document_length: query.average_document_length(),
             top,
             is_stopped,
         };
@@ -551,6 +567,7 @@ impl InvertedIndexScoring for ImmutableInvertedIndex {
                 InMemoryEncodedDocumentLengths(&bm25.document_lengths),
                 options.params,
                 bm25.stats,
+                options.average_document_length,
                 options.top,
                 options.is_stopped,
             ) else {

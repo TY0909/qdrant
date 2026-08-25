@@ -277,4 +277,26 @@ impl FieldIndexRead for FieldIndex {
             | FieldIndex::NullIndex(_) => None,
         }
     }
+
+    fn as_full_text_index(
+        &self,
+    ) -> Option<
+        &(impl FullTextIndexRead
+        + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
+        + '_),
+    > {
+        match self {
+            FieldIndex::FullTextIndex(index) => Some(index),
+            FieldIndex::IntIndex(_)
+            | FieldIndex::DatetimeIndex(_)
+            | FieldIndex::IntMapIndex(_)
+            | FieldIndex::KeywordIndex(_)
+            | FieldIndex::FloatIndex(_)
+            | FieldIndex::GeoIndex(_)
+            | FieldIndex::BoolIndex(_)
+            | FieldIndex::UuidIndex(_)
+            | FieldIndex::UuidMapIndex(_)
+            | FieldIndex::NullIndex(_) => None,
+        }
+    }
 }

@@ -4,6 +4,8 @@ use common::types::PointOffsetType;
 use super::payload_field_index::PayloadFieldIndexRead;
 use crate::common::operation_error::OperationResult;
 use crate::index::field_index::facet_index::FacetIndex;
+use crate::index::field_index::full_text_index::full_text_index_read::FullTextIndexRead;
+use crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring;
 use crate::index::field_index::numeric_index::NumericFieldIndexRead;
 use crate::index::query_optimization::rescore_formula::value_retriever::VariableRetrieverFn;
 use crate::telemetry::PayloadIndexTelemetry;
@@ -76,4 +78,9 @@ pub trait FieldIndexRead: PayloadFieldIndexRead {
     ///
     /// [`PayloadIndexRead::facet_index_for`]: crate::index::PayloadIndexRead::facet_index_for
     fn as_facet_index(&self) -> Option<impl FacetIndex + '_>;
+
+    /// Borrowed full-text view, if this index is full-text.
+    fn as_full_text_index(
+        &self,
+    ) -> Option<&(impl FullTextIndexRead + FullTextIndexScoring + '_)>;
 }

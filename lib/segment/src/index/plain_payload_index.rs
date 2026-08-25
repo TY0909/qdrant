@@ -197,6 +197,17 @@ impl PayloadIndexRead for PlainPayloadIndex {
         None::<FacetIndexEnum<'_>>
     }
 
+    fn full_text_index_for(
+        &self,
+        _key: &JsonPath,
+    ) -> Option<
+        &(impl crate::index::field_index::full_text_index::full_text_index_read::FullTextIndexRead
+        + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
+        + '_),
+    > {
+        None::<&crate::index::field_index::full_text_index::FullTextIndex>
+    }
+
     fn get_telemetry_data(&self) -> OperationResult<Vec<PayloadIndexTelemetry>> {
         // Plain index has no field indexes to report telemetry for.
         Ok(Vec::new())

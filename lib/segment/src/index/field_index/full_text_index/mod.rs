@@ -25,6 +25,8 @@ pub mod tokenizers;
 pub use read_only::ReadOnlyFullTextIndex;
 pub use read_ops::FullTextConditionChecker;
 
+pub(crate) use self::inverted_index::{ParsedQuery, TokenSet};
+
 pub(super) fn is_bm25_enabled(config: &TextIndexParams) -> bool {
     config
         .bm25_config

@@ -19,6 +19,7 @@ use types::ZerocopyPostingValue;
 use self::create_postings::create_postings_file;
 use super::immutable_inverted_index::ImmutableInvertedIndex;
 use super::immutable_postings_enum::ImmutablePostings;
+use super::length_norm::EncodedDocumentLength;
 use super::on_disk_inverted_index::on_disk_postings_enum::OnDiskPostingsEnum;
 use super::positions::Positions;
 use super::postings_iterator::{
@@ -906,6 +907,7 @@ impl<S: UniversalRead> InvertedIndexScoring for OnDiskInvertedIndex<S> {
         let token_weights = self.scoring_token_weights(query)?;
         let options = Bm25SearchOptions {
             params,
+            average_document_length: query.average_document_length(),
             top,
             is_stopped,
         };
@@ -942,6 +944,7 @@ impl<S: UniversalRead> InvertedIndexScoring for OnDiskInvertedIndex<S> {
                     OnDiskEncodedDocumentLengths(&bm25.document_lengths),
                     options.params,
                     bm25.stats,
+                    options.average_document_length,
                     options.top,
                     options.is_stopped,
                 ) else {
@@ -998,6 +1001,7 @@ impl<S: UniversalRead> InvertedIndexScoring for OnDiskInvertedIndex<S> {
         let token_weights = self.scoring_token_weights(query)?;
         let options = Bm25SearchOptions {
             params,
+            average_document_length: query.average_document_length(),
             top,
             is_stopped,
         };
@@ -1034,6 +1038,7 @@ impl<S: UniversalRead> InvertedIndexScoring for OnDiskInvertedIndex<S> {
                     OnDiskEncodedDocumentLengths(&bm25.document_lengths),
                     options.params,
                     bm25.stats,
+                    options.average_document_length,
                     options.top,
                     options.is_stopped,
                 ) else {
@@ -1179,6 +1184,24 @@ impl<S: UniversalRead> InvertedIndex for OnDiskInvertedIndex<S> {
 
     fn points_count(&self) -> usize {
         self.storage.deleted_points.active_count()
+    }
+
+    fn document_length(
+        &self,
+        point_id: PointOffsetType,
+        hw_counter: &HardwareCounterCell,
+    ) -> OperationResult<Option<u32>> {
+        let Some(bm25) = &self.storage.bm25 else {
+            return Ok(None);
+        };
+        let encoded = bm25
+            .document_lengths
+            .read(ReadRange::one(u64::from(point_id)), Random)?;
+        hw_counter.payload_index_io_read_counter().incr_delta(1);
+        Ok(encoded
+            .first()
+            .copied()
+            .map(|length| EncodedDocumentLength::from_encoded(length).decoded()))
     }
 
     fn for_each_token_id<'a, U: UserData>(
