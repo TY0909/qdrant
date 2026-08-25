@@ -80,7 +80,5 @@ pub trait FieldIndexRead: PayloadFieldIndexRead {
     fn as_facet_index(&self) -> Option<impl FacetIndex + '_>;
 
     /// Borrowed full-text view, if this index is full-text.
-    fn as_full_text_index(
-        &self,
-    ) -> Option<&(impl FullTextIndexRead + FullTextIndexScoring + '_)>;
+    fn as_full_text_index(&self) -> Option<&(impl FullTextIndexRead + FullTextIndexScoring + '_)>;
 }

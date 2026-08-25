@@ -284,7 +284,7 @@ impl FieldIndexRead for FieldIndex {
         &(impl FullTextIndexRead
         + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
         + '_),
-    > {
+    >{
         match self {
             FieldIndex::FullTextIndex(index) => Some(index),
             FieldIndex::IntIndex(_)

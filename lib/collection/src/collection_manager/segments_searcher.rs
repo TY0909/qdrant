@@ -11,8 +11,9 @@ use itertools::Itertools;
 use ordered_float::Float;
 use segment::common::operation_error::OperationError;
 use segment::data_types::modifier::Modifier;
-use segment::data_types::query_context::PayloadTextSearchContext;
-use segment::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
+use segment::data_types::query_context::{
+    FormulaContext, PayloadTextSearchContext, QueryContext, SegmentQueryContext,
+};
 use segment::data_types::segment_record::SegmentRecordRaw;
 use segment::data_types::vectors::QueryVector;
 use segment::types::{

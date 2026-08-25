@@ -316,7 +316,7 @@ impl<S: UniversalReadExt> FieldIndexRead for ReadOnlyFieldIndex<S> {
         &(impl FullTextIndexRead
         + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
         + '_),
-    > {
+    >{
         match self {
             ReadOnlyFieldIndex::FullTextIndex(index) => Some(index),
             ReadOnlyFieldIndex::IntIndex(_)

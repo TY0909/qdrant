@@ -204,7 +204,7 @@ impl PayloadIndexRead for PlainPayloadIndex {
         &(impl crate::index::field_index::full_text_index::full_text_index_read::FullTextIndexRead
         + crate::index::field_index::full_text_index::full_text_index_scoring::FullTextIndexScoring
         + '_),
-    > {
+    >{
         None::<&crate::index::field_index::full_text_index::FullTextIndex>
     }
 
