@@ -16,6 +16,7 @@ use segment::vector_storage::query::{
 };
 
 use crate::query::formula::*;
+use crate::query::payload_query::TextQueryInternal;
 use crate::query::query_enum::*;
 use crate::query::{
     FusionInternal, MmrInternal, SampleInternal, ScoringQuery, ShardPrefetch, ShardQueryRequest,
@@ -112,9 +113,10 @@ impl From<ShardQueryRequest> for grpc::QueryShardPoints {
                 .into_iter()
                 .map(grpc::query_shard_points::Prefetch::from)
                 .collect(),
-            using: query
-                .as_ref()
-                .and_then(|query| query.get_vector_name().map(ToOwned::to_owned)),
+            using: query.as_ref().and_then(|query| match query.target()? {
+                QueryTarget::Vector(vector_name) => Some(vector_name.to_owned()),
+                QueryTarget::PayloadField(_) => None,
+            }),
             query: query.map(From::from),
             filter: filter.map(grpc::Filter::from),
             params: params.map(grpc::SearchParams::from),
@@ -139,9 +141,10 @@ impl From<ShardPrefetch> for grpc::query_shard_points::Prefetch {
         } = value;
         Self {
             prefetch: prefetches.into_iter().map(Self::from).collect(),
-            using: query
-                .as_ref()
-                .and_then(|query| query.get_vector_name().map(ToOwned::to_owned)),
+            using: query.as_ref().and_then(|query| match query.target()? {
+                QueryTarget::Vector(vector_name) => Some(vector_name.to_owned()),
+                QueryTarget::PayloadField(_) => None,
+            }),
             query: query.map(From::from),
             filter: filter.map(grpc::Filter::from),
             params: params.map(grpc::SearchParams::from),
@@ -345,6 +348,9 @@ impl ScoringQuery {
             grpc::query_shard_points::query::Score::Vector(query) => {
                 ScoringQuery::Vector(QueryEnum::from_grpc_raw_query(query, using)?)
             }
+            grpc::query_shard_points::query::Score::Payload(query) => {
+                ScoringQuery::Vector(QueryEnum::Text(TextQueryInternal::try_from(query)?))
+            }
             grpc::query_shard_points::query::Score::Fusion(fusion) => {
                 ScoringQuery::Fusion(FusionInternal::try_from(fusion)?)
             }
@@ -388,8 +394,11 @@ impl From<ScoringQuery> for grpc::query_shard_points::Query {
         use grpc::query_shard_points::query::Score;
 
         match value {
+            ScoringQuery::Vector(QueryEnum::Text(query)) => Self {
+                score: Some(Score::Payload(grpc::RawPayloadQuery::from(query))),
+            },
             ScoringQuery::Vector(query) => Self {
-                score: Some(Score::Vector(grpc::RawQuery::from(query))),
+                score: query.into_raw_query().map(Score::Vector),
             },
             ScoringQuery::Fusion(fusion) => Self::from(fusion),
             ScoringQuery::OrderBy(order_by) => Self {
@@ -417,9 +426,9 @@ impl From<ScoringQuery> for grpc::query_shard_points::Query {
     }
 }
 
-impl From<QueryEnum> for grpc::QueryEnum {
-    fn from(value: QueryEnum) -> Self {
-        match value {
+impl QueryEnum {
+    pub fn into_grpc_query_enum(self) -> Option<grpc::QueryEnum> {
+        Some(match self {
             QueryEnum::Nearest(vector) => grpc::QueryEnum {
                 query: Some(grpc::query_enum::Query::NearestNeighbors(
                     grpc::Vector::from(vector.query),
@@ -462,11 +471,8 @@ impl From<QueryEnum> for grpc::QueryEnum {
                         .collect(),
                 })),
             },
-            QueryEnum::FeedbackNaive(_named) => {
-                // This conversion only happens for search/recommend/discover dedicated endpoints. Feedback does not have one.
-                unimplemented!("there is no specialized feedback endpoint")
-            }
-        }
+            QueryEnum::FeedbackNaive(_) | QueryEnum::Text(_) => return None,
+        })
     }
 }
 
@@ -562,11 +568,11 @@ impl QueryEnum {
     }
 }
 
-impl From<QueryEnum> for grpc::RawQuery {
-    fn from(query: QueryEnum) -> Self {
+impl QueryEnum {
+    fn into_raw_query(self) -> Option<grpc::RawQuery> {
         use grpc::raw_query::Variant;
 
-        let variant = match query {
+        let variant = match self {
             QueryEnum::Nearest(named) => Variant::Nearest(grpc::RawVector::from(named.query)),
             QueryEnum::RecommendBestScore(named) => {
                 Variant::RecommendBestScore(grpc::raw_query::Recommend::from(named.query))
@@ -583,10 +589,67 @@ impl From<QueryEnum> for grpc::RawQuery {
             QueryEnum::FeedbackNaive(named) => {
                 Variant::Feedback(grpc::raw_query::Feedback::from(named.query))
             }
+            QueryEnum::Text(_) => return None,
         };
 
-        grpc::RawQuery {
+        Some(grpc::RawQuery {
             variant: Some(variant),
+        })
+    }
+}
+
+impl From<TextQueryInternal> for grpc::RawPayloadQuery {
+    fn from(value: TextQueryInternal) -> Self {
+        let TextQueryInternal {
+            key,
+            query_str,
+            query_token_weights,
+            average_document_length,
+        } = value;
+        Self {
+            variant: Some(grpc::raw_payload_query::Variant::Text(
+                grpc::raw_payload_query::Text {
+                    key: key.to_string(),
+                    query_str,
+                    query_token_weights: query_token_weights
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(token, idf)| grpc::RawQueryTokenWeight {
+                            token,
+                            idf: idf.into_inner(),
+                        })
+                        .collect(),
+                    average_document_length: average_document_length.map(OrderedFloat::into_inner),
+                },
+            )),
+        }
+    }
+}
+
+impl TryFrom<grpc::RawPayloadQuery> for TextQueryInternal {
+    type Error = tonic::Status;
+
+    fn try_from(value: grpc::RawPayloadQuery) -> Result<Self, Self::Error> {
+        let variant = value
+            .variant
+            .ok_or_else(|| tonic::Status::invalid_argument("missing field: variant"))?;
+        match variant {
+            grpc::raw_payload_query::Variant::Text(text) => {
+                let key = text.key.parse().map_err(|_| {
+                    tonic::Status::invalid_argument(format!("invalid JSON path {}", text.key))
+                })?;
+                Ok(Self {
+                    key,
+                    query_str: text.query_str,
+                    query_token_weights: (!text.query_token_weights.is_empty()).then(|| {
+                        text.query_token_weights
+                            .into_iter()
+                            .map(|weight| (weight.token, OrderedFloat(weight.idf)))
+                            .collect()
+                    }),
+                    average_document_length: text.average_document_length.map(OrderedFloat),
+                })
+            }
         }
     }
 }

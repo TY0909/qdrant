@@ -9,6 +9,7 @@ use itertools::{Either, Itertools};
 use segment::types::{
     ExtendedPointId, Filter, Order, ScoredPoint, ShardKey, WithPayloadInterface, WithVector,
 };
+use shard::query::query_enum::ScoreSemantics;
 use shard::retrieve::record_internal::RecordInternal;
 use shard::search::CoreSearchRequestBatch;
 use tokio::time::Instant;
@@ -297,14 +298,11 @@ impl Collection {
         let mut seen_ids = AHashSet::new();
 
         for (batch_index, request) in request.searches.iter().enumerate() {
-            let order = if request.query.is_distance_scored() {
-                collection_params
-                    .get_distance(request.query.get_vector_name())?
-                    .distance_order()
-            } else {
-                // Score comes from special handling of the distances in a way that it doesn't
-                // directly represent distance anymore, so the order is always `LargeBetter`
-                Order::LargeBetter
+            let order = match request.query.capabilities().score {
+                ScoreSemantics::Distance(vector_name) => collection_params
+                    .get_distance(vector_name)?
+                    .distance_order(),
+                ScoreSemantics::LargerBetter => Order::LargeBetter,
             };
 
             let results_from_shards = all_searches_res

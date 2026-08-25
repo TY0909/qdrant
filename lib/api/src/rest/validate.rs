@@ -7,8 +7,8 @@ use validator::{Validate, ValidationError, ValidationErrors};
 use super::schema::validate_non_empty_dense;
 use super::{
     Batch, BatchVectorStruct, ContextInput, Expression, FormulaQuery, Fusion, NamedVectorStruct,
-    PointVectors, Query, QueryInterface, RecommendInput, RelevanceFeedbackInput, Sample,
-    VectorInput,
+    PayloadQueryInterface, PointVectors, Query, QueryInterface, RecommendInput,
+    RelevanceFeedbackInput, Sample, VectorInput,
 };
 use crate::rest::FeedbackStrategy;
 
@@ -44,6 +44,15 @@ impl Validate for Query {
             Query::OrderBy(order_by) => order_by.validate(),
             Query::Sample(sample) => sample.validate(),
             Query::RelevanceFeedback(feedback) => feedback.validate(),
+            Query::Payload(payload) => payload.validate(),
+        }
+    }
+}
+
+impl Validate for PayloadQueryInterface {
+    fn validate(&self) -> Result<(), validator::ValidationErrors> {
+        match self {
+            PayloadQueryInterface::Text(text) => text.validate(),
         }
     }
 }

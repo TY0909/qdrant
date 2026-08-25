@@ -43,6 +43,8 @@ service PointsInternal {
   rpc Get(GetPointsInternal) returns (GetResponse) {}
   rpc QueryBatch(QueryBatchPointsInternal)
       returns (QueryBatchResponseInternal) {}
+  rpc TextQueryStats(TextQueryStatsInternal)
+      returns (TextQueryStatsResponseInternal) {}
   rpc Facet(FacetCountsInternal) returns (FacetResponseInternal) {}
 }
 
@@ -354,6 +356,24 @@ message RawVector {
   }
 }
 
+message RawPayloadQuery {
+  message Text {
+    string key = 1;
+    string query_str = 2;
+    repeated RawQueryTokenWeight query_token_weights = 3;
+    optional double average_document_length = 4;
+  }
+
+  oneof variant {
+    Text text = 1;
+  }
+}
+
+message RawQueryTokenWeight {
+  string token = 1;
+  float idf = 2;
+}
+
 // Query variants for raw vectors (ids have been substituted with vectors)
 message RawQuery {
   message Recommend {
@@ -429,6 +449,8 @@ message QueryShardPoints {
       MmrInternal mmr = 6;
       // Parameterized RRF fusion
       Rrf rrf = 7;
+      // Score by payload query
+      RawPayloadQuery payload = 8;
     }
   }
 
@@ -459,6 +481,22 @@ message QueryBatchPointsInternal {
   repeated QueryShardPoints query_points = 2;
   optional uint32 shard_id = 3;
   optional uint64 timeout = 4;
+}
+
+message TextQueryStatsInternal {
+  string collection_name = 1;
+  TextQuery query = 2;
+  optional Filter corpus = 3;
+  optional uint32 shard_id = 4;
+  optional uint64 timeout = 5;
+}
+
+message TextQueryStatsResponseInternal {
+  uint64 doc_count = 1;
+  repeated string tokens = 2;
+  repeated uint64 doc_frequencies = 3;
+  optional HardwareUsage hardware_usage = 4;
+  uint64 sum_document_length = 5;
 }
 
 message IntermediateResult {

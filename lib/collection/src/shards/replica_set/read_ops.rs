@@ -275,6 +275,34 @@ impl ShardReplicaSet {
         .await
     }
 
+    pub async fn text_query_stats(
+        &self,
+        request: Arc<shard::query::payload_query::TextQueryStatsRequest>,
+        read_consistency: Option<ReadConsistency>,
+        routing_token: Option<RoutingToken>,
+        local_only: bool,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<shard::query::payload_query::TextQueryStats> {
+        self.execute_and_resolve_read_operation(
+            |shard| {
+                let request = Arc::clone(&request);
+                let search_runtime = self.search_runtime.clone();
+                let hw_measurement_acc = hw_measurement_acc.clone();
+                async move {
+                    shard
+                        .text_query_stats(request, &search_runtime, timeout, hw_measurement_acc)
+                        .await
+                }
+                .boxed()
+            },
+            read_consistency,
+            routing_token,
+            local_only,
+        )
+        .await
+    }
+
     pub async fn facet(
         &self,
         request: Arc<FacetParams>,

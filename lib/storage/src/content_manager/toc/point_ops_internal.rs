@@ -8,12 +8,27 @@ use collection::operations::universal_query::shard_query::{ShardQueryRequest, Sh
 use collection::shards::shard::ShardId;
 use common::counter::hardware_accumulator::HwMeasurementAcc;
 use segment::data_types::facets::{FacetParams, FacetResponse};
+use shard::query::payload_query::{TextQueryStats, TextQueryStatsRequest};
 
 use super::TableOfContent;
 use crate::content_manager::errors::StorageResult;
 use crate::rbac::{AccessRequirements, Auth};
 
 impl TableOfContent {
+    pub async fn text_query_stats_internal(
+        &self,
+        collection_name: &str,
+        request: TextQueryStatsRequest,
+        shard_selection: &ShardSelectorInternal,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> StorageResult<TextQueryStats> {
+        let collection = self.get_collection_unchecked(collection_name).await?;
+        Ok(collection
+            .text_query_stats_internal(request, shard_selection, timeout, hw_measurement_acc)
+            .await?)
+    }
+
     pub async fn query_batch_internal(
         &self,
         collection_name: &str,

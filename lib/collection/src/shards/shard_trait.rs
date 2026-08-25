@@ -158,6 +158,14 @@ pub trait ShardOperation {
         hw_measurement_acc: HwMeasurementAcc,
     ) -> CollectionResult<Vec<ShardQueryResponse>>;
 
+    async fn text_query_stats(
+        &self,
+        request: Arc<shard::query::payload_query::TextQueryStatsRequest>,
+        search_runtime_handle: &AdaptiveSearchHandle,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<shard::query::payload_query::TextQueryStats>;
+
     async fn facet(
         &self,
         request: Arc<FacetParams>,

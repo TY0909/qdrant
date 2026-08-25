@@ -8,6 +8,7 @@ use segment::data_types::query_context::QueryContext;
 use segment::types::VectorName;
 
 use crate::common::stopping_guard::StoppingGuard;
+use crate::query::query_enum::QueryTarget;
 use crate::search::CoreSearchRequest;
 use crate::segment_holder::locked::LockedSegmentHolder;
 
@@ -23,6 +24,10 @@ pub fn init_query_context(
         .with_is_stopped(is_stopped_guard.get_is_stopped());
 
     for search_request in batch_request {
+        let vector_name = match search_request.query.capabilities().target {
+            QueryTarget::Vector(vector_name) => vector_name,
+            QueryTarget::PayloadField(_) => continue,
+        };
         let idf_params = search_request
             .params
             .as_ref()
@@ -30,11 +35,10 @@ pub fn init_query_context(
 
         // The `idf` search param changes scoring, so silently ignoring it
         // when it cannot apply would be misleading.
-        if idf_params.is_some() && !check_idf_required(search_request.query.get_vector_name()) {
+        if idf_params.is_some() && !check_idf_required(vector_name) {
             return Err(OperationError::validation_error(format!(
                 "search param `idf` requires a sparse vector with the `idf` modifier, \
-                 which vector {:?} is not",
-                search_request.query.get_vector_name(),
+                 which vector {vector_name:?} is not",
             )));
         }
 

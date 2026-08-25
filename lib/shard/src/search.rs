@@ -11,7 +11,7 @@ use segment::types::{
 #[cfg(feature = "api")]
 use segment::{data_types::vectors::VectorInternal, vector_storage::query::ContextPair};
 
-use crate::query::query_enum::QueryEnum;
+use crate::query::query_enum::{QueryEnum, QueryTarget};
 
 /// DEPRECATED: Search method should be removed and replaced with `ShardQueryRequest`
 #[derive(Clone, Debug, PartialEq)]
@@ -54,11 +54,18 @@ impl CoreSearchRequest {
         // The `with_payload` default of a search is `false`.
         let with_payload = with_payload.as_ref().is_some_and(|wp| wp.is_required());
 
-        LoadProfile::for_search(query.get_vector_name(), filter.as_ref(), with_payload)
+        match query.capabilities().target {
+            QueryTarget::Vector(vector_name) => {
+                LoadProfile::for_search(vector_name, filter.as_ref(), with_payload)
+            }
+            QueryTarget::PayloadField(key) => {
+                LoadProfile::for_payload_search(key, filter.as_ref(), with_payload)
+            }
+        }
     }
 
-    pub fn search_rate_cost(&self) -> usize {
-        let mut cost = self.query.search_cost();
+    pub fn query_rate_cost(&self) -> usize {
+        let mut cost = self.query.estimated_cost();
 
         if let Some(filter) = &self.filter {
             cost += filter.total_conditions_count();
@@ -264,16 +271,17 @@ pub enum SearchType {
     FeedbackNaive,
 }
 
-impl From<&QueryEnum> for SearchType {
-    fn from(query: &QueryEnum) -> Self {
-        match query {
+impl SearchType {
+    fn from_query(query: &QueryEnum) -> Option<Self> {
+        Some(match query {
             QueryEnum::Nearest(_) => Self::Nearest,
             QueryEnum::RecommendBestScore(_) => Self::RecommendBestScore,
             QueryEnum::RecommendSumScores(_) => Self::RecommendSumScores,
             QueryEnum::Discover(_) => Self::Discover,
             QueryEnum::Context(_) => Self::Context,
             QueryEnum::FeedbackNaive(_) => Self::FeedbackNaive,
-        }
+            QueryEnum::Text(_) => return None,
+        })
     }
 }
 
@@ -292,8 +300,8 @@ pub struct BatchSearchParams<'a> {
     pub params: Option<&'a SearchParams>,
 }
 
-impl<'a> From<&'a CoreSearchRequest> for BatchSearchParams<'a> {
-    fn from(request: &'a CoreSearchRequest) -> Self {
+impl<'a> BatchSearchParams<'a> {
+    fn from_request(request: &'a CoreSearchRequest) -> Option<Self> {
         let CoreSearchRequest {
             query,
             filter,
@@ -305,9 +313,14 @@ impl<'a> From<&'a CoreSearchRequest> for BatchSearchParams<'a> {
             score_threshold: _, // applied to the merged result, not by the segment
         } = request;
 
-        Self {
-            search_type: SearchType::from(query),
-            vector_name: query.get_vector_name(),
+        let vector_name = match query.capabilities().target {
+            QueryTarget::Vector(vector_name) => vector_name,
+            QueryTarget::PayloadField(_) => return None,
+        };
+
+        Some(Self {
+            search_type: SearchType::from_query(query)?,
+            vector_name,
             filter: filter.as_ref(),
             with_payload: WithPayload::from(
                 with_payload
@@ -317,7 +330,7 @@ impl<'a> From<&'a CoreSearchRequest> for BatchSearchParams<'a> {
             with_vector: with_vector.clone().unwrap_or_default(),
             top: limit + offset,
             params: params.as_ref(),
-        }
+        })
     }
 }
 
@@ -330,6 +343,22 @@ pub struct SearchBatchGroup<'a> {
     pub query_vectors: Vec<QueryVector>,
 }
 
+#[derive(Debug)]
+pub enum QueryBatchGroup<'a> {
+    Vector(SearchBatchGroup<'a>),
+    Text(&'a CoreSearchRequest),
+}
+
+impl QueryBatchGroup<'_> {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        match self {
+            Self::Vector(group) => group.query_vectors.len(),
+            Self::Text(_) => 1,
+        }
+    }
+}
+
 /// Split a batch of search requests into groups that can each be pushed down to a segment as a
 /// single batched search, so per-query work that does not depend on the query vector — resolving
 /// the vector index, building the filtered id context — is paid once per group instead of once
@@ -340,34 +369,54 @@ pub struct SearchBatchGroup<'a> {
 ///
 /// The grouping depends on the requests alone, so a caller searching several segments computes it
 /// once and reuses it for every segment.
-pub fn group_search_batches(searches: &[CoreSearchRequest]) -> Vec<SearchBatchGroup<'_>> {
-    let mut groups: Vec<SearchBatchGroup> = Vec::with_capacity(searches.len());
+pub fn group_search_batches(searches: &[CoreSearchRequest]) -> Vec<QueryBatchGroup<'_>> {
+    let mut groups: Vec<QueryBatchGroup> = Vec::with_capacity(searches.len());
 
     for search in searches {
-        let params = BatchSearchParams::from(search);
-        let query_vector = QueryVector::from(search.query.clone());
+        let Some(params) = BatchSearchParams::from_request(search) else {
+            groups.push(QueryBatchGroup::Text(search));
+            continue;
+        };
+        let Some(query_vector) = search.query.clone().into_query_vector() else {
+            groups.push(QueryBatchGroup::Text(search));
+            continue;
+        };
 
         // Comparing params is expensive on large filters, but far cheaper than re-running a
         // segment search that could have shared one.
         match groups.last_mut() {
-            Some(last) if last.params == params => last.query_vectors.push(query_vector),
-            Some(_) | None => groups.push(SearchBatchGroup {
-                params,
-                query_vectors: vec![query_vector],
-            }),
+            Some(QueryBatchGroup::Vector(last)) if last.params == params => {
+                last.query_vectors.push(query_vector)
+            }
+            Some(_) | None => groups.push(
+                SearchBatchGroup {
+                    params,
+                    query_vectors: vec![query_vector],
+                }
+                .into(),
+            ),
         }
     }
 
     groups
 }
 
+impl<'a> From<SearchBatchGroup<'a>> for QueryBatchGroup<'a> {
+    fn from(group: SearchBatchGroup<'a>) -> Self {
+        Self::Vector(group)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ahash::AHashSet;
+    use ordered_float::OrderedFloat;
     use segment::data_types::vectors::{NamedQuery, VectorInternal};
+    use segment::json_path::JsonPath;
     use segment::types::{Condition, HasIdCondition};
 
     use super::*;
+    use crate::query::payload_query::TextQueryInternal;
 
     fn nearest(vector: Vec<f32>, limit: usize) -> CoreSearchRequest {
         CoreSearchRequest {
@@ -388,8 +437,26 @@ mod tests {
     fn group_sizes(searches: &[CoreSearchRequest]) -> Vec<usize> {
         group_search_batches(searches)
             .iter()
-            .map(|group| group.query_vectors.len())
+            .map(QueryBatchGroup::len)
             .collect()
+    }
+
+    fn text(query: &str, limit: usize) -> CoreSearchRequest {
+        CoreSearchRequest {
+            query: QueryEnum::Text(TextQueryInternal {
+                key: JsonPath::new("description"),
+                query_str: query.to_string(),
+                query_token_weights: Some(vec![(query.to_string(), OrderedFloat(1.0))]),
+                average_document_length: Some(OrderedFloat(1.0)),
+            }),
+            filter: None,
+            params: None,
+            limit,
+            offset: 0,
+            with_payload: None,
+            with_vector: None,
+            score_threshold: None,
+        }
     }
 
     #[test]
@@ -442,6 +509,26 @@ mod tests {
         ];
 
         assert_eq!(group_sizes(&searches), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn text_queries_share_the_ordered_search_group_stream() {
+        let searches = vec![
+            nearest(vec![1.0], 3),
+            nearest(vec![2.0], 3),
+            text("rust", 3),
+            nearest(vec![3.0], 3),
+            nearest(vec![4.0], 3),
+        ];
+
+        let groups = group_search_batches(&searches);
+        assert_eq!(
+            groups.iter().map(QueryBatchGroup::len).collect::<Vec<_>>(),
+            vec![2, 1, 2]
+        );
+        assert!(matches!(groups[0], QueryBatchGroup::Vector(_)));
+        assert!(matches!(groups[1], QueryBatchGroup::Text(_)));
+        assert!(matches!(groups[2], QueryBatchGroup::Vector(_)));
     }
 
     #[test]

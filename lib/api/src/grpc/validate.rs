@@ -422,9 +422,18 @@ impl Validate for super::qdrant::query::Variant {
             grpc::query::Variant::Formula(q) => q.validate(),
             grpc::query::Variant::Rrf(q) => q.validate(),
             grpc::query::Variant::RelevanceFeedback(q) => q.validate(),
+            grpc::query::Variant::Payload(q) => q.validate(),
             grpc::query::Variant::Sample(_)
             | grpc::query::Variant::Fusion(_)
             | grpc::query::Variant::OrderBy(_) => Ok(()),
+        }
+    }
+}
+
+impl Validate for super::qdrant::payload_query::Variant {
+    fn validate(&self) -> Result<(), ValidationErrors> {
+        match self {
+            grpc::payload_query::Variant::Text(query) => query.validate(),
         }
     }
 }
@@ -605,7 +614,8 @@ mod tests {
     use crate::grpc::qdrant::{
         CreateCollection, CreateFieldIndexCollection, CreateVectorNameRequest, DenseVector,
         DenseVectorCreationConfig, FieldCondition, GeoBoundingBox, GeoLineString, GeoPoint,
-        GeoPolygon, GeoRadius, SearchPoints, UpdateCollection, create_vector_name_request, vector,
+        GeoPolygon, GeoRadius, PayloadQuery, Query, SearchPoints, TextQuery, UpdateCollection,
+        create_vector_name_request, payload_query, query, vector,
     };
 
     #[test]
@@ -621,6 +631,29 @@ mod tests {
         // that assumes non-zero length (see qdrant/qdrant#9045, #7967).
         let empty = vector::Vector::Dense(DenseVector { data: vec![] });
         assert!(empty.validate().is_err());
+    }
+
+    #[test]
+    fn test_payload_text_query_validation() {
+        let query = Query {
+            variant: Some(query::Variant::Payload(PayloadQuery {
+                variant: Some(payload_query::Variant::Text(TextQuery {
+                    key: "text".to_string(),
+                    query_str: String::new(),
+                })),
+            })),
+        };
+        assert!(query.validate().is_err());
+
+        let query = Query {
+            variant: Some(query::Variant::Payload(PayloadQuery {
+                variant: Some(payload_query::Variant::Text(TextQuery {
+                    key: "text".to_string(),
+                    query_str: "hello".to_string(),
+                })),
+            })),
+        };
+        assert!(query.validate().is_ok());
     }
 
     #[test]

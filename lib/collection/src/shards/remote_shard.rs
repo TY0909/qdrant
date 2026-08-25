@@ -15,7 +15,8 @@ use api::grpc::qdrant::{
     HealthCheckRequest, InitiateShardTransferRequest, QueryBatchPointsInternal,
     QueryBatchResponseInternal, QueryShardPoints, RecoverShardSnapshotRequest,
     RecoverSnapshotResponse, ScrollPoints, ScrollPointsInternal, SearchBatchResponse,
-    ShardSnapshotLocation, UpdateShardCutoffPointRequest, WaitForShardStateRequest,
+    ShardSnapshotLocation, TextQuery, TextQueryStatsInternal, UpdateShardCutoffPointRequest,
+    WaitForShardStateRequest,
 };
 use api::grpc::transport_channel_pool::{MAX_GRPC_CHANNEL_TIMEOUT, PoolInterceptor};
 use api::grpc::update_operation::Update;
@@ -36,6 +37,7 @@ use segment::types::{
 use semver::Version;
 use shard::count::CountRequestInternal;
 use shard::operations::optimization::{OptimizationsRequestOptions, OptimizationsResponse};
+use shard::query::payload_query::{TextQueryStats, TextQueryStatsRequest};
 use shard::retrieve::record_internal::RecordInternal;
 use shard::scroll::ScrollRequestInternal;
 use shard::search::CoreSearchRequestBatch;
@@ -1554,6 +1556,52 @@ impl ShardOperation for RemoteShard {
         timer.set_success(true);
 
         Ok(result)
+    }
+
+    async fn text_query_stats(
+        &self,
+        request: Arc<TextQueryStatsRequest>,
+        _search_runtime_handle: &AdaptiveSearchHandle,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<TextQueryStats> {
+        let processed_timeout = Self::process_read_timeout(timeout, "text_query_stats")?;
+        let response = self
+            .with_points_client(|mut client| {
+                let request = Arc::clone(&request);
+                async move {
+                    let request = TextQueryStatsInternal {
+                        collection_name: self.collection_id.clone(),
+                        query: Some(TextQuery {
+                            key: request.key.to_string(),
+                            query_str: request.query_str.clone(),
+                        }),
+                        corpus: request.corpus.clone().map(api::grpc::qdrant::Filter::from),
+                        shard_id: Some(self.id),
+                        timeout: processed_timeout.map(|duration| duration.as_secs()),
+                    };
+                    let mut request = tonic::Request::new(request);
+                    if let Some(timeout) = processed_timeout {
+                        request.set_timeout(timeout);
+                    }
+                    client.text_query_stats(request).await
+                }
+            })
+            .await?
+            .into_inner();
+        if let Some(hw_usage) = response.hardware_usage {
+            hw_measurement_acc.accumulate_request(hw_usage);
+        }
+        Ok(TextQueryStats {
+            doc_count: response.doc_count as usize,
+            sum_document_length: response.sum_document_length,
+            tokens: response.tokens,
+            doc_frequencies: response
+                .doc_frequencies
+                .into_iter()
+                .map(|frequency| frequency as usize)
+                .collect(),
+        })
     }
 
     async fn facet(

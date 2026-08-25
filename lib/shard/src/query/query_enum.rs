@@ -1,10 +1,14 @@
+use common::types::ScoreType;
 use segment::data_types::vectors::*;
-use segment::types::VectorName;
+use segment::json_path::JsonPath;
+use segment::types::{Distance, Order, VectorName};
 use segment::vector_storage::query::*;
 use serde::Serialize;
 use sparse::common::sparse_vector::SparseVector;
 
-/// Every kind of vector query that can be performed on segment level.
+use super::payload_query::TextQueryInternal;
+
+/// Every scoring query that can be performed on segment level.
 #[derive(Clone, Debug, PartialEq, Hash, Serialize)]
 pub enum QueryEnum {
     Nearest(NamedQuery<VectorInternal>),
@@ -13,30 +17,99 @@ pub enum QueryEnum {
     Discover(NamedQuery<DiscoverQuery<VectorInternal>>),
     Context(NamedQuery<ContextQuery<VectorInternal>>),
     FeedbackNaive(NamedQuery<NaiveFeedbackQuery<VectorInternal>>),
+    Text(TextQueryInternal),
 }
 
-impl QueryEnum {
-    pub fn get_vector_name(&self) -> &VectorName {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryTarget<'a> {
+    Vector(&'a VectorName),
+    PayloadField(&'a JsonPath),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScoreSemantics<'a> {
+    Distance(&'a VectorName),
+    LargerBetter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueryCapabilities<'a> {
+    pub target: QueryTarget<'a>,
+    pub score: ScoreSemantics<'a>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResolvedScoreSemantics {
+    Distance(Distance),
+    LargerBetter,
+}
+
+impl ScoreSemantics<'_> {
+    pub fn resolve<E>(
+        self,
+        get_distance: impl FnOnce(&VectorName) -> Result<Distance, E>,
+    ) -> Result<ResolvedScoreSemantics, E> {
         match self {
-            QueryEnum::Nearest(vector) => vector.get_name(),
-            QueryEnum::RecommendBestScore(reco_query) => reco_query.get_name(),
-            QueryEnum::RecommendSumScores(reco_query) => reco_query.get_name(),
-            QueryEnum::Discover(discover_query) => discover_query.get_name(),
-            QueryEnum::Context(context_query) => context_query.get_name(),
-            QueryEnum::FeedbackNaive(feedback_query) => feedback_query.get_name(),
+            Self::Distance(vector_name) => {
+                get_distance(vector_name).map(ResolvedScoreSemantics::Distance)
+            }
+            Self::LargerBetter => Ok(ResolvedScoreSemantics::LargerBetter),
+        }
+    }
+}
+
+impl ResolvedScoreSemantics {
+    pub fn order(self) -> Order {
+        match self {
+            Self::Distance(distance) => distance.distance_order(),
+            Self::LargerBetter => Order::LargeBetter,
         }
     }
 
-    /// Only when the distance is the scoring, this will return true.
-    pub fn is_distance_scored(&self) -> bool {
+    pub fn postprocess(self, score: ScoreType) -> ScoreType {
         match self {
-            QueryEnum::Nearest(_) => true,
+            Self::Distance(distance) => distance.postprocess_score(score),
+            Self::LargerBetter => score,
+        }
+    }
+
+    pub fn passes_threshold(self, score: ScoreType, threshold: ScoreType) -> bool {
+        match self {
+            Self::Distance(distance) => distance.check_threshold(score, threshold),
+            Self::LargerBetter => score >= threshold,
+        }
+    }
+
+    pub fn is_ordered(self, left: ScoreType, right: ScoreType) -> bool {
+        match self.order() {
+            Order::LargeBetter => left >= right,
+            Order::SmallBetter => left <= right,
+        }
+    }
+}
+
+impl QueryEnum {
+    pub fn capabilities(&self) -> QueryCapabilities<'_> {
+        let target = match self {
+            QueryEnum::Nearest(query) => QueryTarget::Vector(query.get_name()),
+            QueryEnum::RecommendBestScore(query) | QueryEnum::RecommendSumScores(query) => {
+                QueryTarget::Vector(query.get_name())
+            }
+            QueryEnum::Discover(query) => QueryTarget::Vector(query.get_name()),
+            QueryEnum::Context(query) => QueryTarget::Vector(query.get_name()),
+            QueryEnum::FeedbackNaive(query) => QueryTarget::Vector(query.get_name()),
+            QueryEnum::Text(query) => QueryTarget::PayloadField(&query.key),
+        };
+        let score = match self {
+            QueryEnum::Nearest(query) => ScoreSemantics::Distance(query.get_name()),
             QueryEnum::RecommendBestScore(_)
             | QueryEnum::RecommendSumScores(_)
             | QueryEnum::Discover(_)
             | QueryEnum::Context(_)
-            | QueryEnum::FeedbackNaive(_) => false,
-        }
+            | QueryEnum::FeedbackNaive(_)
+            | QueryEnum::Text(_) => ScoreSemantics::LargerBetter,
+        };
+        QueryCapabilities { target, score }
     }
 
     pub fn iterate_sparse(&self, mut f: impl FnMut(&VectorName, &SparseVector)) {
@@ -82,12 +155,13 @@ impl QueryEnum {
                     }
                 }
             }
+            QueryEnum::Text(_) => {}
         }
     }
 
     /// Returns the estimated cost of using this query in terms of number of vectors.
     /// The cost approximates how many similarity comparisons this query will make against one point.
-    pub fn search_cost(&self) -> usize {
+    pub fn estimated_cost(&self) -> usize {
         match self {
             QueryEnum::Nearest(named_query) => search_cost([&named_query.query]),
             QueryEnum::RecommendBestScore(named_query) => {
@@ -99,6 +173,7 @@ impl QueryEnum {
             QueryEnum::Discover(named_query) => search_cost(named_query.query.flat_iter()),
             QueryEnum::Context(named_query) => search_cost(named_query.query.flat_iter()),
             QueryEnum::FeedbackNaive(named_query) => search_cost(named_query.query.flat_iter()),
+            QueryEnum::Text(_) => 1,
         }
     }
 }
@@ -131,15 +206,51 @@ impl From<NamedQuery<DiscoverQuery<VectorInternal>>> for QueryEnum {
     }
 }
 
-impl From<QueryEnum> for QueryVector {
-    fn from(query: QueryEnum) -> Self {
-        match query {
+impl QueryEnum {
+    pub fn into_query_vector(self) -> Option<QueryVector> {
+        Some(match self {
             QueryEnum::Nearest(named) => QueryVector::Nearest(named.query),
             QueryEnum::RecommendBestScore(named) => QueryVector::RecommendBestScore(named.query),
             QueryEnum::RecommendSumScores(named) => QueryVector::RecommendSumScores(named.query),
             QueryEnum::Discover(named) => QueryVector::Discover(named.query),
             QueryEnum::Context(named) => QueryVector::Context(named.query),
             QueryEnum::FeedbackNaive(named) => QueryVector::FeedbackNaive(named.query),
-        }
+            QueryEnum::Text(_) => return None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearest_query_exposes_distance_capabilities() {
+        let query = QueryEnum::from(vec![1.0, 2.0]);
+        let capabilities = query.capabilities();
+
+        assert!(matches!(capabilities.target, QueryTarget::Vector(_)));
+        assert!(matches!(capabilities.score, ScoreSemantics::Distance(_)));
+        assert!(query.estimated_cost() > 0);
+    }
+
+    #[test]
+    fn resolved_score_semantics_own_score_behavior() {
+        let distance = ResolvedScoreSemantics::Distance(Distance::Euclid);
+        assert_eq!(distance.order(), Distance::Euclid.distance_order());
+        assert_eq!(
+            distance.postprocess(2.0),
+            Distance::Euclid.postprocess_score(2.0),
+        );
+        assert_eq!(
+            distance.passes_threshold(2.0, 3.0),
+            Distance::Euclid.check_threshold(2.0, 3.0),
+        );
+
+        let larger_better = ResolvedScoreSemantics::LargerBetter;
+        assert_eq!(larger_better.order(), Order::LargeBetter);
+        assert_eq!(larger_better.postprocess(2.0), 2.0);
+        assert!(larger_better.passes_threshold(3.0, 2.0));
+        assert!(!larger_better.passes_threshold(1.0, 2.0));
     }
 }

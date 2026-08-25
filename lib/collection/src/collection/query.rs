@@ -11,6 +11,7 @@ use segment::common::score_fusion::{ScoreFusion, score_fusion};
 use segment::data_types::vectors::VectorStructInternal;
 use segment::types::{Order, ScoredPoint, WithPayloadInterface, WithVector};
 use segment::utils::scored_point_ties::ScoredPointTies;
+use shard::query::payload_query::{TextQueryStats, TextQueryStatsRequest};
 use tokio::time::Instant;
 
 use super::Collection;
@@ -123,7 +124,10 @@ impl Collection {
 
             let is_exact = request.params.as_ref().is_some_and(|p| p.exact);
 
-            if is_exact || request_limit < Self::SHARD_QUERY_SUBSAMPLING_LIMIT {
+            if is_exact
+                || new_request.has_text_query()
+                || request_limit < Self::SHARD_QUERY_SUBSAMPLING_LIMIT
+            {
                 new_requests.push(new_request);
                 continue;
             }
@@ -201,6 +205,88 @@ impl Collection {
                 })
         });
         future::try_join_all(all_searches).await
+    }
+
+    async fn global_text_query_stats(
+        &self,
+        request: TextQueryStatsRequest,
+        read_consistency: Option<ReadConsistency>,
+        routing_token: Option<RoutingToken>,
+        shard_selection: &ShardSelectorInternal,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<TextQueryStats> {
+        let shard_holder = self.shards_holder.read().await;
+        let target_shards = shard_holder.select_shards(shard_selection)?;
+        let request = Arc::new(request);
+        let futures = target_shards.iter().map(|(shard, _)| {
+            shard.text_query_stats(
+                Arc::clone(&request),
+                read_consistency,
+                routing_token,
+                shard_selection.is_shard_id(),
+                timeout,
+                hw_measurement_acc.clone(),
+            )
+        });
+        let shard_stats = future::try_join_all(futures).await?;
+
+        let mut merged = TextQueryStats::default();
+        for stats in shard_stats {
+            merged.merge(stats)?;
+        }
+        Ok(merged)
+    }
+
+    async fn resolve_text_queries(
+        &self,
+        requests: &mut [ShardQueryRequest],
+        read_consistency: Option<ReadConsistency>,
+        routing_token: Option<RoutingToken>,
+        shard_selection: &ShardSelectorInternal,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<()> {
+        let stats_requests = requests
+            .iter()
+            .flat_map(ShardQueryRequest::text_query_stats_requests)
+            .unique()
+            .collect_vec();
+        for stats_request in stats_requests {
+            let stats = self
+                .global_text_query_stats(
+                    stats_request.clone(),
+                    read_consistency,
+                    routing_token,
+                    shard_selection,
+                    timeout,
+                    hw_measurement_acc.clone(),
+                )
+                .await?;
+            let (weights, average_document_length) = stats.into_query_parts();
+            for request in requests.iter_mut() {
+                request.set_text_query_stats(&stats_request, &weights, average_document_length);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn text_query_stats_internal(
+        &self,
+        request: TextQueryStatsRequest,
+        shard_selection: &ShardSelectorInternal,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<TextQueryStats> {
+        self.global_text_query_stats(
+            request,
+            None,
+            None,
+            shard_selection,
+            timeout,
+            hw_measurement_acc,
+        )
+        .await
     }
 
     /// This function is used to query the collection. It will return a list of scored points.
@@ -301,7 +387,7 @@ impl Collection {
     /// This function is used to query the collection. It will return a list of scored points.
     async fn do_query_batch_impl(
         &self,
-        requests_batch: Vec<ShardQueryRequest>,
+        mut requests_batch: Vec<ShardQueryRequest>,
         read_consistency: Option<ReadConsistency>,
         routing_token: Option<RoutingToken>,
         shard_selection: &ShardSelectorInternal,
@@ -309,6 +395,16 @@ impl Collection {
         hw_measurement_acc: HwMeasurementAcc,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
         let instant = Instant::now();
+
+        self.resolve_text_queries(
+            &mut requests_batch,
+            read_consistency,
+            routing_token,
+            shard_selection,
+            timeout,
+            hw_measurement_acc.clone(),
+        )
+        .await?;
 
         let requests_batch = Arc::new(requests_batch);
 

@@ -434,6 +434,23 @@ impl ShardOperation for QueueProxyShard {
             .await
     }
 
+    async fn text_query_stats(
+        &self,
+        request: Arc<shard::query::payload_query::TextQueryStatsRequest>,
+        search_runtime_handle: &AdaptiveSearchHandle,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<shard::query::payload_query::TextQueryStats> {
+        ShardOperation::text_query_stats(
+            &self.inner_unchecked().wrapped_shard,
+            request,
+            search_runtime_handle,
+            timeout,
+            hw_measurement_acc,
+        )
+        .await
+    }
+
     async fn facet(
         &self,
         request: Arc<FacetParams>,
@@ -878,6 +895,23 @@ impl ShardOperation for Inner {
         local_shard
             .query_batch(request, search_runtime_handle, timeout, hw_measurement_acc)
             .await
+    }
+
+    async fn text_query_stats(
+        &self,
+        request: Arc<shard::query::payload_query::TextQueryStatsRequest>,
+        search_runtime_handle: &AdaptiveSearchHandle,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<shard::query::payload_query::TextQueryStats> {
+        ShardOperation::text_query_stats(
+            &self.wrapped_shard,
+            request,
+            search_runtime_handle,
+            timeout,
+            hw_measurement_acc,
+        )
+        .await
     }
 
     async fn facet(

@@ -11,6 +11,7 @@ use itertools::Itertools;
 use ordered_float::Float;
 use segment::common::operation_error::OperationError;
 use segment::data_types::modifier::Modifier;
+use segment::data_types::query_context::PayloadTextSearchContext;
 use segment::data_types::query_context::{FormulaContext, QueryContext, SegmentQueryContext};
 use segment::data_types::segment_record::SegmentRecordRaw;
 use segment::data_types::vectors::QueryVector;
@@ -20,10 +21,12 @@ use segment::types::{
 use shard::common::stopping_guard::StoppingGuard;
 use shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB;
 use shard::query::query_context::{fill_query_context, init_query_context};
+use shard::query::query_enum::QueryEnum;
 use shard::retrieve::record_internal::RecordInternal;
 use shard::retrieve::retrieve_blocking::{retrieve_blocking, retrieve_raw_blocking};
 use shard::search::{
-    BatchSearchParams, CoreSearchRequestBatch, SearchBatchGroup, group_search_batches,
+    BatchSearchParams, CoreSearchRequestBatch, QueryBatchGroup, SearchBatchGroup,
+    group_search_batches,
 };
 use shard::search_result_aggregator::BatchResultAggregator;
 use shard::segment_holder::locked::LockedSegmentHolder;
@@ -631,24 +634,62 @@ fn search_in_segment(
     let mut further_results: Vec<bool> = Vec::with_capacity(batch_size); // if segment have more points to return
 
     for group in group_search_batches(&request.searches) {
-        let SearchBatchGroup {
-            params,
-            query_vectors,
-        } = group;
-
-        let (mut res, mut further) = execute_batch_search(
-            &segment,
-            &query_vectors,
-            &params,
-            use_sampling,
-            segment_query_context,
-            timeout,
-        )?;
-        further_results.append(&mut further);
-        result.append(&mut res);
+        match group {
+            QueryBatchGroup::Vector(SearchBatchGroup {
+                params,
+                query_vectors,
+            }) => {
+                let (mut res, mut further) = execute_batch_search(
+                    &segment,
+                    &query_vectors,
+                    &params,
+                    use_sampling,
+                    segment_query_context,
+                    timeout,
+                )?;
+                further_results.append(&mut further);
+                result.append(&mut res);
+            }
+            QueryBatchGroup::Text(request) => {
+                let text_result =
+                    execute_text_search(&segment, request, segment_query_context, timeout)?;
+                result.push(text_result);
+                further_results.push(false);
+            }
+        }
     }
 
     Ok((result, further_results))
+}
+
+fn execute_text_search(
+    segment: &LockedSegment,
+    request: &shard::search::CoreSearchRequest,
+    segment_query_context: &SegmentQueryContext,
+    timeout: Duration,
+) -> CollectionResult<Vec<ScoredPoint>> {
+    let QueryEnum::Text(text_query) = &request.query else {
+        return Err(OperationError::service_error(
+            "non-text query was assigned to a text search group",
+        )
+        .into());
+    };
+
+    let context = PayloadTextSearchContext {
+        key: text_query.key.clone(),
+        query: text_query.resolved_query()?,
+        filter: request.filter.clone(),
+        top: request.limit + request.offset,
+        is_stopped: segment_query_context.is_stopped_handle(),
+    };
+
+    let locked_segment = segment.get();
+    let Some(read_segment) = locked_segment.try_read_for(timeout) else {
+        return Err(CollectionError::timeout(timeout, "text search"));
+    };
+    let result = read_segment
+        .search_payload_text(Arc::new(context), &segment_query_context.hardware_counter())?;
+    Ok(result)
 }
 
 fn execute_batch_search(

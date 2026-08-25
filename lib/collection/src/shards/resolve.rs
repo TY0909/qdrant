@@ -6,6 +6,7 @@ use std::rc::Rc;
 use itertools::Itertools;
 use segment::data_types::facets::{FacetResponse, FacetValue};
 use segment::types::{Payload, ScoredPoint};
+use shard::query::payload_query::TextQueryStats;
 use shard::retrieve::record_internal::RecordInternal;
 use tinyvec::TinyVec;
 
@@ -30,6 +31,18 @@ impl ResolveCondition {
 
 pub trait Resolve: Default + Sized {
     fn resolve(responses: Vec<Self>, condition: ResolveCondition) -> Self;
+}
+
+impl Resolve for TextQueryStats {
+    fn resolve(responses: Vec<Self>, _condition: ResolveCondition) -> Self {
+        responses
+            .into_iter()
+            .counts()
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(stats, _)| stats)
+            .unwrap_or_default()
+    }
 }
 
 impl Resolve for CountResult {

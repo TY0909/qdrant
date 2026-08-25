@@ -296,6 +296,19 @@ fn convert_query_with_inferred(
         Variant::Rrf(rrf) => Query::Fusion(FusionInternal::try_from(rrf)?),
         Variant::Formula(formula) => Query::Formula(FormulaInternal::try_from(formula)?),
         Variant::Sample(sample) => Query::Sample(SampleInternal::try_from(sample)?),
+        Variant::Payload(payload) => {
+            let payload = rest::PayloadQuery::try_from(payload)?;
+            match payload.payload {
+                rest::PayloadQueryInterface::Text(rest::TextQuery { text }) => {
+                    Query::Text(shard::query::payload_query::TextQueryInternal {
+                        key: text.key,
+                        query_str: text.query_str,
+                        query_token_weights: None,
+                        average_document_length: None,
+                    })
+                }
+            }
+        }
         Variant::NearestWithMmr(grpc::NearestInputWithMmr { nearest, mmr }) => {
             let nearest =
                 nearest.ok_or_else(|| Status::invalid_argument("nearest vector is missing"))?;

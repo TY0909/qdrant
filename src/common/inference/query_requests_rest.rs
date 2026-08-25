@@ -273,6 +273,16 @@ fn convert_query_with_inferred(
         rest::Query::Rrf(rrf) => Ok(Query::Fusion(FusionInternal::from(rrf.rrf))),
         rest::Query::Formula(formula) => Ok(Query::Formula(FormulaInternal::from(formula))),
         rest::Query::Sample(sample) => Ok(Query::Sample(SampleInternal::from(sample.sample))),
+        rest::Query::Payload(payload) => match payload.payload {
+            rest::PayloadQueryInterface::Text(rest::TextQuery { text }) => Ok(Query::Text(
+                shard::query::payload_query::TextQueryInternal {
+                    key: text.key,
+                    query_str: text.query_str,
+                    query_token_weights: None,
+                    average_document_length: None,
+                },
+            )),
+        },
         rest::Query::RelevanceFeedback(relevance_feedback) => {
             let rest::RelevanceFeedbackInput {
                 target,

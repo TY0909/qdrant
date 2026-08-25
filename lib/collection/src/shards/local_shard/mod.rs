@@ -7,6 +7,7 @@ pub(super) mod resolve_submit;
 pub(super) mod scroll;
 pub(super) mod search;
 pub(super) mod shard_ops;
+pub(super) mod text_query_stats;
 
 mod snapshot;
 mod telemetry;

@@ -2,6 +2,7 @@
 mod conversions;
 pub mod formula;
 pub mod mmr;
+pub mod payload_query;
 pub mod planned_query;
 pub mod query_enum;
 pub mod scroll;
@@ -20,6 +21,7 @@ use segment::types::*;
 use serde::Serialize;
 
 use self::query_enum::*;
+use crate::query::payload_query::{TextQueryInternal, TextQueryStatsRequest};
 use crate::search::CoreSearchRequest;
 
 /// Internal response type for a universal query request.
@@ -69,6 +71,58 @@ impl ShardQueryRequest {
 
         filters
     }
+
+    pub fn text_query_stats_requests(&self) -> Vec<TextQueryStatsRequest> {
+        let mut requests = Vec::new();
+        self.visit_text_queries(&mut |text, params| {
+            requests.push(text_query_stats_request(text, params));
+        });
+        requests
+    }
+
+    pub fn set_text_query_stats(
+        &mut self,
+        request: &TextQueryStatsRequest,
+        weights: &[(String, OrderedFloat<f32>)],
+        average_document_length: Option<OrderedFloat<f64>>,
+    ) {
+        self.visit_text_queries_mut(&mut |text, params| {
+            if text_query_stats_request(text, params) == *request {
+                text.query_token_weights = Some(weights.to_vec());
+                text.average_document_length = average_document_length;
+            }
+        });
+    }
+
+    pub fn has_text_query(&self) -> bool {
+        let mut found = false;
+        self.visit_text_queries(&mut |_, _| found = true);
+        found
+    }
+
+    fn visit_text_queries<'a>(
+        &'a self,
+        f: &mut impl FnMut(&'a TextQueryInternal, Option<&'a SearchParams>),
+    ) {
+        if let Some(ScoringQuery::Vector(QueryEnum::Text(text))) = &self.query {
+            f(text, self.params.as_ref());
+        }
+        for prefetch in &self.prefetches {
+            prefetch.visit_text_queries(f);
+        }
+    }
+
+    fn visit_text_queries_mut<'a>(
+        &'a mut self,
+        f: &mut impl FnMut(&'a mut TextQueryInternal, Option<&'a SearchParams>),
+    ) {
+        if let Some(ScoringQuery::Vector(QueryEnum::Text(text))) = &mut self.query {
+            f(text, self.params.as_ref());
+        }
+        for prefetch in &mut self.prefetches {
+            prefetch.visit_text_queries_mut(f);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Hash, Serialize)]
@@ -105,6 +159,44 @@ impl ShardPrefetch {
 
         filters
     }
+
+    fn visit_text_queries<'a>(
+        &'a self,
+        f: &mut impl FnMut(&'a TextQueryInternal, Option<&'a SearchParams>),
+    ) {
+        if let Some(ScoringQuery::Vector(QueryEnum::Text(text))) = &self.query {
+            f(text, self.params.as_ref());
+        }
+        for prefetch in &self.prefetches {
+            prefetch.visit_text_queries(f);
+        }
+    }
+
+    fn visit_text_queries_mut<'a>(
+        &'a mut self,
+        f: &mut impl FnMut(&'a mut TextQueryInternal, Option<&'a SearchParams>),
+    ) {
+        if let Some(ScoringQuery::Vector(QueryEnum::Text(text))) = &mut self.query {
+            f(text, self.params.as_ref());
+        }
+        for prefetch in &mut self.prefetches {
+            prefetch.visit_text_queries_mut(f);
+        }
+    }
+}
+
+fn text_query_stats_request(
+    text: &TextQueryInternal,
+    params: Option<&SearchParams>,
+) -> TextQueryStatsRequest {
+    TextQueryStatsRequest {
+        key: text.key.clone(),
+        query_str: text.query_str.clone(),
+        corpus: params
+            .and_then(|params| params.idf.as_ref())
+            .and_then(IdfParams::corpus)
+            .cloned(),
+    }
 }
 
 /// Same as `Query`, but with the resolved vector references.
@@ -137,11 +229,10 @@ pub enum ScoringQuery {
 }
 
 impl ScoringQuery {
-    /// Get the vector name if it is scored against a vector
-    pub fn get_vector_name(&self) -> Option<&VectorName> {
+    pub fn target(&self) -> Option<QueryTarget<'_>> {
         match self {
-            ScoringQuery::Vector(query) => Some(query.get_vector_name()),
-            ScoringQuery::Mmr(mmr) => Some(&mmr.using),
+            ScoringQuery::Vector(query) => Some(query.capabilities().target),
+            ScoringQuery::Mmr(mmr) => Some(QueryTarget::Vector(&mmr.using)),
             ScoringQuery::Fusion(_)
             | ScoringQuery::OrderBy(_)
             | ScoringQuery::Formula(_)
@@ -160,13 +251,13 @@ pub fn query_result_order<E>(
 ) -> Result<Option<Order>, E> {
     let order = match query {
         Some(scoring_query) => match scoring_query {
-            ScoringQuery::Vector(query_enum) => {
-                if query_enum.is_distance_scored() {
-                    Some(get_distance(query_enum.get_vector_name())?.distance_order())
-                } else {
-                    Some(Order::LargeBetter)
-                }
-            }
+            ScoringQuery::Vector(query_enum) => Some(
+                query_enum
+                    .capabilities()
+                    .score
+                    .resolve(get_distance)?
+                    .order(),
+            ),
             ScoringQuery::Fusion(fusion) => match fusion {
                 FusionInternal::Rrf { k: _, weights: _ } | FusionInternal::Dbsf => {
                     Some(Order::LargeBetter)

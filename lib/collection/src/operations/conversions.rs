@@ -29,6 +29,7 @@ use segment::types::{
     Distance, Filter, HnswConfig, MultiVectorConfig, QuantizationConfig, SearchParams,
     StrictModeConfigOutput, WithPayloadInterface, WithVector,
 };
+use shard::query::query_enum::QueryTarget;
 use shard::retrieve::record_internal::RecordInternal;
 use tonic::Status;
 
@@ -1104,9 +1105,13 @@ impl<'a> From<CollectionCoreSearchRequest<'a>> for api::grpc::qdrant::CoreSearch
             score_threshold,
             offset,
         } = request;
+        let vector_name = match query.capabilities().target {
+            QueryTarget::Vector(vector_name) => Some(vector_name.to_owned()),
+            QueryTarget::PayloadField(_) => None,
+        };
         Self {
             collection_name: collection_id,
-            query: Some(api::grpc::QueryEnum::from(query.clone())),
+            query: query.clone().into_grpc_query_enum(),
             filter: filter.clone().map(Filter::into),
             limit: *limit as u64,
             with_vectors: with_vector.clone().map(WithVector::into),
@@ -1114,7 +1119,7 @@ impl<'a> From<CollectionCoreSearchRequest<'a>> for api::grpc::qdrant::CoreSearch
             params: params.clone().map(SearchParams::into),
             score_threshold: *score_threshold,
             offset: Some(*offset as u64),
-            vector_name: Some(query.get_vector_name().to_owned()),
+            vector_name,
             read_consistency: None,
         }
     }

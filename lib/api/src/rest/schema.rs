@@ -671,6 +671,9 @@ pub enum Query {
 
     /// Use feedback from an oracle to improve the results
     RelevanceFeedback(RelevanceFeedbackQuery),
+
+    /// Score points by payload content.
+    Payload(PayloadQuery),
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Validate)]
@@ -748,6 +751,33 @@ pub struct SampleQuery {
 pub struct RelevanceFeedbackQuery {
     #[validate(nested)]
     pub relevance_feedback: RelevanceFeedbackInput,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct PayloadQuery {
+    #[validate(nested)]
+    pub payload: PayloadQueryInterface,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum PayloadQueryInterface {
+    Text(TextQuery),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct TextQuery {
+    #[validate(nested)]
+    pub text: TextQueryInput,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Validate)]
+pub struct TextQueryInput {
+    pub key: JsonPath,
+    #[validate(length(min = 1, message = "query_str can't be empty"))]
+    pub query_str: String,
 }
 
 /// Maximal Marginal Relevance (MMR) algorithm for re-ranking the points.

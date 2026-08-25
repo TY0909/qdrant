@@ -13,8 +13,9 @@ use api::grpc::qdrant::{
     GetPointsInternal, GetResponse, IntermediateResult, PointsOperationResponseInternal,
     QueryBatchPointsInternal, QueryBatchResponseInternal, QueryResultInternal, QueryShardPoints,
     RecommendPointsInternal, RecommendResponse, ScrollPointsInternal, ScrollResponse,
-    SearchBatchResponse, SetPayloadPointsInternal, SyncPointsInternal, UpdateBatchInternal,
-    UpdateVectorsInternal, UpsertPointsInternal,
+    SearchBatchResponse, SetPayloadPointsInternal, SyncPointsInternal, TextQueryStatsInternal,
+    TextQueryStatsResponseInternal, UpdateBatchInternal, UpdateVectorsInternal,
+    UpsertPointsInternal,
 };
 use api::grpc::update_operation::Update;
 use collection::operations::shard_selector_internal::ShardSelectorInternal;
@@ -25,6 +26,7 @@ use itertools::Itertools;
 use segment::data_types::facets::{FacetParams, FacetResponse};
 use segment::json_path::JsonPath;
 use segment::types::Filter;
+use shard::query::payload_query::TextQueryStatsRequest;
 use storage::content_manager::toc::TableOfContent;
 use storage::content_manager::toc::request_hw_counter::RequestHwCounter;
 use storage::rbac::Auth;
@@ -1034,6 +1036,55 @@ impl PointsInternal for PointsInternalService {
             hw_data,
         )
         .await
+    }
+
+    async fn text_query_stats(
+        &self,
+        request: Request<TextQueryStatsInternal>,
+    ) -> Result<Response<TextQueryStatsResponseInternal>, Status> {
+        let TextQueryStatsInternal {
+            collection_name,
+            query,
+            corpus,
+            shard_id,
+            timeout,
+        } = request.into_inner();
+        let query = query.ok_or_else(|| Status::invalid_argument("missing text query"))?;
+        if query.query_str.is_empty() {
+            return Err(Status::invalid_argument("query_str can't be empty"));
+        }
+        let shard_selection = shard_id
+            .map(ShardSelectorInternal::ShardId)
+            .unwrap_or(ShardSelectorInternal::All);
+        let stats_request = TextQueryStatsRequest {
+            key: JsonPath::from_str(&query.key)
+                .map_err(|_| Status::invalid_argument("invalid text query key"))?,
+            query_str: query.query_str,
+            corpus: corpus.map(Filter::try_from).transpose()?,
+        };
+        let hw_data =
+            self.get_request_collection_hw_usage_counter_for_internal(collection_name.clone());
+        let stats = self
+            .toc
+            .text_query_stats_internal(
+                &collection_name,
+                stats_request,
+                &shard_selection,
+                timeout.map(Duration::from_secs),
+                hw_data.get_counter(),
+            )
+            .await?;
+        Ok(Response::new(TextQueryStatsResponseInternal {
+            doc_count: stats.doc_count as u64,
+            sum_document_length: stats.sum_document_length,
+            tokens: stats.tokens,
+            doc_frequencies: stats
+                .doc_frequencies
+                .into_iter()
+                .map(|frequency| frequency as u64)
+                .collect(),
+            hardware_usage: hw_data.to_grpc_api(),
+        }))
     }
 
     async fn facet(

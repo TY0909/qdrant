@@ -200,6 +200,16 @@ impl ShardOperation for DummyShard {
         self.dummy("query")
     }
 
+    async fn text_query_stats(
+        &self,
+        _: Arc<shard::query::payload_query::TextQueryStatsRequest>,
+        _: &AdaptiveSearchHandle,
+        _: Option<Duration>,
+        _: HwMeasurementAcc,
+    ) -> CollectionResult<shard::query::payload_query::TextQueryStats> {
+        self.dummy("text query stats")
+    }
+
     async fn facet(
         &self,
         _: Arc<FacetParams>,

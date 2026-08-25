@@ -4,7 +4,6 @@ use std::time::Duration;
 use common::counter::hardware_accumulator::HwMeasurementAcc;
 use segment::types::ScoredPoint;
 use shard::common::stopping_guard::StoppingGuard;
-use shard::query::query_enum::QueryEnum;
 use shard::search::CoreSearchRequestBatch;
 
 use super::LocalShard;
@@ -150,34 +149,28 @@ impl LocalShard {
             .into_iter()
             .zip(core_request.searches.iter())
             .map(|(vector_res, req)| {
-                let vector_name = req.query.get_vector_name();
-                let distance = collection_params.get_distance(vector_name).unwrap();
+                let score_semantics = req
+                    .query
+                    .capabilities()
+                    .score
+                    .resolve(|vector_name| collection_params.get_distance(vector_name))?;
                 let processed_res = vector_res.into_iter().map(|mut scored_point| {
-                    match req.query {
-                        QueryEnum::Nearest(_) => {
-                            scored_point.score = distance.postprocess_score(scored_point.score);
-                        }
-                        // Don't post-process if we are dealing with custom scoring
-                        QueryEnum::RecommendBestScore(_)
-                        | QueryEnum::RecommendSumScores(_)
-                        | QueryEnum::Discover(_)
-                        | QueryEnum::Context(_)
-                        | QueryEnum::FeedbackNaive(_) => {}
-                    };
+                    scored_point.score = score_semantics.postprocess(scored_point.score);
                     scored_point
                 });
 
-                if let Some(threshold) = req.score_threshold {
+                let points = if let Some(threshold) = req.score_threshold {
                     processed_res
                         .take_while(|scored_point| {
-                            distance.check_threshold(scored_point.score, threshold)
+                            score_semantics.passes_threshold(scored_point.score, threshold)
                         })
                         .collect()
                 } else {
                     processed_res.collect()
-                }
+                };
+                Ok(points)
             })
-            .collect();
+            .collect::<CollectionResult<_>>()?;
         Ok(top_results)
     }
 }

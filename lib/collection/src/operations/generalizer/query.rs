@@ -115,6 +115,7 @@ impl Generalizer for QueryEnum {
             QueryEnum::FeedbackNaive(feedback) => {
                 QueryEnum::FeedbackNaive(feedback.remove_details())
             }
+            QueryEnum::Text(text) => QueryEnum::Text(text.clone()),
         }
     }
 }

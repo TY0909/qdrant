@@ -5866,8 +5866,8 @@ pub struct AcornSearchParams {
     #[validate(range(min = 0.0, max = 1.0))]
     pub max_selectivity: ::core::option::Option<f64>,
 }
-/// Population over which sparse vector IDF statistics are computed for scoring - the IDF corpus.
-/// Only applicable to sparse vectors with the IDF modifier enabled.
+/// Population over which IDF statistics are computed for scoring - the IDF corpus.
+/// Applicable to sparse vectors with the IDF modifier enabled and BM25 payload text queries.
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -5903,7 +5903,7 @@ pub struct SearchParams {
     #[prost(message, optional, tag = "5")]
     #[validate(nested)]
     pub acorn: ::core::option::Option<AcornSearchParams>,
-    /// Which population sparse vector IDF statistics are computed over.
+    /// Which population IDF statistics are computed over.
     /// If unset, statistics are collection-wide (global).
     #[prost(message, optional, tag = "6")]
     #[validate(nested)]
@@ -6786,7 +6786,7 @@ pub struct Rrf {
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Query {
-    #[prost(oneof = "query::Variant", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "query::Variant", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     #[validate(nested)]
     pub variant: ::core::option::Option<query::Variant>,
 }
@@ -6828,7 +6828,37 @@ pub mod query {
         /// Search with feedback from some oracle.
         #[prost(message, tag = "11")]
         RelevanceFeedback(super::RelevanceFeedbackInput),
+        /// Search by payload content.
+        #[prost(message, tag = "12")]
+        Payload(super::PayloadQuery),
     }
+}
+#[derive(validator::Validate)]
+#[derive(serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PayloadQuery {
+    #[prost(oneof = "payload_query::Variant", tags = "1")]
+    #[validate(nested)]
+    pub variant: ::core::option::Option<payload_query::Variant>,
+}
+/// Nested message and enum types in `PayloadQuery`.
+pub mod payload_query {
+    #[derive(serde::Serialize)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Variant {
+        #[prost(message, tag = "1")]
+        Text(super::TextQuery),
+    }
+}
+#[derive(validator::Validate)]
+#[derive(serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TextQuery {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    #[validate(length(min = 1, message = "query_str can't be empty"))]
+    pub query_str: ::prost::alloc::string::String,
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
@@ -11185,6 +11215,41 @@ pub mod raw_vector {
         MultiDense(super::MultiDenseVector),
     }
 }
+#[derive(serde::Serialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawPayloadQuery {
+    #[prost(oneof = "raw_payload_query::Variant", tags = "1")]
+    pub variant: ::core::option::Option<raw_payload_query::Variant>,
+}
+/// Nested message and enum types in `RawPayloadQuery`.
+pub mod raw_payload_query {
+    #[derive(serde::Serialize)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Text {
+        #[prost(string, tag = "1")]
+        pub key: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub query_str: ::prost::alloc::string::String,
+        #[prost(message, repeated, tag = "3")]
+        pub query_token_weights: ::prost::alloc::vec::Vec<super::RawQueryTokenWeight>,
+        #[prost(double, optional, tag = "4")]
+        pub average_document_length: ::core::option::Option<f64>,
+    }
+    #[derive(serde::Serialize)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Variant {
+        #[prost(message, tag = "1")]
+        Text(Text),
+    }
+}
+#[derive(serde::Serialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawQueryTokenWeight {
+    #[prost(string, tag = "1")]
+    pub token: ::prost::alloc::string::String,
+    #[prost(float, tag = "2")]
+    pub idf: f32,
+}
 /// Query variants for raw vectors (ids have been substituted with vectors)
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -11309,7 +11374,7 @@ pub mod query_shard_points {
     #[derive(serde::Serialize)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Query {
-        #[prost(oneof = "query::Score", tags = "1, 2, 3, 4, 5, 6, 7")]
+        #[prost(oneof = "query::Score", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
         pub score: ::core::option::Option<query::Score>,
     }
     /// Nested message and enum types in `Query`.
@@ -11338,6 +11403,9 @@ pub mod query_shard_points {
             /// Parameterized RRF fusion
             #[prost(message, tag = "7")]
             Rrf(super::super::Rrf),
+            /// Score by payload query
+            #[prost(message, tag = "8")]
+            Payload(super::super::RawPayloadQuery),
         }
     }
     #[derive(serde::Serialize)]
@@ -11376,6 +11444,34 @@ pub struct QueryBatchPointsInternal {
     #[prost(uint64, optional, tag = "4")]
     #[validate(range(min = 1))]
     pub timeout: ::core::option::Option<u64>,
+}
+#[derive(serde::Serialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TextQueryStatsInternal {
+    #[prost(string, tag = "1")]
+    pub collection_name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub query: ::core::option::Option<TextQuery>,
+    #[prost(message, optional, tag = "3")]
+    pub corpus: ::core::option::Option<Filter>,
+    #[prost(uint32, optional, tag = "4")]
+    pub shard_id: ::core::option::Option<u32>,
+    #[prost(uint64, optional, tag = "5")]
+    pub timeout: ::core::option::Option<u64>,
+}
+#[derive(serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TextQueryStatsResponseInternal {
+    #[prost(uint64, tag = "1")]
+    pub doc_count: u64,
+    #[prost(string, repeated, tag = "2")]
+    pub tokens: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint64, repeated, tag = "3")]
+    pub doc_frequencies: ::prost::alloc::vec::Vec<u64>,
+    #[prost(message, optional, tag = "4")]
+    pub hardware_usage: ::core::option::Option<HardwareUsage>,
+    #[prost(uint64, tag = "5")]
+    pub sum_document_length: u64,
 }
 #[derive(serde::Serialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -12090,6 +12186,30 @@ pub mod points_internal_client {
                 .insert(GrpcMethod::new("qdrant.PointsInternal", "QueryBatch"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn text_query_stats(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TextQueryStatsInternal>,
+        ) -> std::result::Result<
+            tonic::Response<super::TextQueryStatsResponseInternal>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/qdrant.PointsInternal/TextQueryStats",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("qdrant.PointsInternal", "TextQueryStats"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn facet(
             &mut self,
             request: impl tonic::IntoRequest<super::FacetCountsInternal>,
@@ -12258,6 +12378,13 @@ pub mod points_internal_server {
             request: tonic::Request<super::QueryBatchPointsInternal>,
         ) -> std::result::Result<
             tonic::Response<super::QueryBatchResponseInternal>,
+            tonic::Status,
+        >;
+        async fn text_query_stats(
+            &self,
+            request: tonic::Request<super::TextQueryStatsInternal>,
+        ) -> std::result::Result<
+            tonic::Response<super::TextQueryStatsResponseInternal>,
             tonic::Status,
         >;
         async fn facet(
@@ -13241,6 +13368,52 @@ pub mod points_internal_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = QueryBatchSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/qdrant.PointsInternal/TextQueryStats" => {
+                    #[allow(non_camel_case_types)]
+                    struct TextQueryStatsSvc<T: PointsInternal>(pub Arc<T>);
+                    impl<
+                        T: PointsInternal,
+                    > tonic::server::UnaryService<super::TextQueryStatsInternal>
+                    for TextQueryStatsSvc<T> {
+                        type Response = super::TextQueryStatsResponseInternal;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TextQueryStatsInternal>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as PointsInternal>::text_query_stats(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = TextQueryStatsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

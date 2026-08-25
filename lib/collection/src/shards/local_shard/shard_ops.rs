@@ -373,7 +373,7 @@ impl ShardOperation for LocalShard {
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
         // Check read rate limiter before proceeding
         self.check_read_rate_limiter(&hw_measurement_acc, "core_search", || {
-            request.searches.iter().map(|s| s.search_rate_cost()).sum()
+            request.searches.iter().map(|s| s.query_rate_cost()).sum()
         })?;
         let timeout = self.timeout_or_default_search_timeout(timeout);
         self.do_search(request, search_runtime_handle, timeout, hw_measurement_acc)
@@ -506,7 +506,7 @@ impl ShardOperation for LocalShard {
             planned_query
                 .searches
                 .iter()
-                .map(|s| s.search_rate_cost())
+                .map(|s| s.query_rate_cost())
                 .chain(planned_query.scrolls.iter().map(|s| s.scroll_rate_cost()))
                 .sum()
         })?;
@@ -533,6 +533,24 @@ impl ShardOperation for LocalShard {
         });
 
         result
+    }
+
+    async fn text_query_stats(
+        &self,
+        request: Arc<shard::query::payload_query::TextQueryStatsRequest>,
+        _search_runtime_handle: &AdaptiveSearchHandle,
+        timeout: Option<Duration>,
+        hw_measurement_acc: HwMeasurementAcc,
+    ) -> CollectionResult<shard::query::payload_query::TextQueryStats> {
+        let timeout = self.timeout_or_default_search_timeout(timeout);
+        let stopping_guard = shard::common::stopping_guard::StoppingGuard::new();
+        self.text_query_stats(
+            request.as_ref().clone(),
+            timeout,
+            hw_measurement_acc,
+            stopping_guard.get_is_stopped(),
+        )
+        .await
     }
 
     /// This call is rate limited by the read rate limiter.

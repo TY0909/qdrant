@@ -362,6 +362,8 @@ fn configure_validation(builder: Builder) -> Builder {
             ("Mmr.candidates_limit", "range(max = 16_384)"),
             ("Rrf.k", "range(min = 1)"),
             ("Query.variant", ""),
+            ("PayloadQuery.variant", ""),
+            ("TextQuery.query_str", "length(min = 1, message = \"query_str can't be empty\")"),
             ("PrefetchQuery.prefetch", ""),
             ("PrefetchQuery.query", ""),
             ("PrefetchQuery.filter", ""),

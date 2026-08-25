@@ -1,17 +1,18 @@
 use std::cmp;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use common::counter::hardware_accumulator::HwMeasurementAcc;
 use common::iterator_ext::IteratorExt;
 use segment::common::operation_error::{OperationError, OperationResult};
 use segment::data_types::modifier::Modifier;
-use segment::data_types::query_context::QueryContext;
+use segment::data_types::query_context::{PayloadTextSearchContext, QueryContext};
 use segment::entry::ReadSegmentEntry;
-use segment::types::{DEFAULT_FULL_SCAN_THRESHOLD, Distance, ScoredPoint};
+use segment::types::{DEFAULT_FULL_SCAN_THRESHOLD, ScoredPoint};
 use shard::common::stopping_guard::StoppingGuard;
 use shard::query::query_context::init_query_context;
-use shard::query::query_enum::QueryEnum;
-use shard::search::{CoreSearchRequest, group_search_batches};
+use shard::query::query_enum::{QueryEnum, ResolvedScoreSemantics};
+use shard::search::{CoreSearchRequest, QueryBatchGroup, SearchBatchGroup, group_search_batches};
 use shard::search_result_aggregator::BatchResultAggregator;
 
 use crate::read_view::{EdgeReadView, ReadSegmentHandle};
@@ -64,9 +65,15 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
         )?;
 
         // Resolved up front so an unknown vector name fails the batch before any search runs.
-        let distances = searches
+        let score_semantics = searches
             .iter()
-            .map(|search| self.config.get_distance(search.query.get_vector_name()))
+            .map(|search| {
+                search
+                    .query
+                    .capabilities()
+                    .score
+                    .resolve(|vector_name| self.config.get_distance(vector_name))
+            })
             .collect::<OperationResult<Vec<_>>>()?;
 
         let Some(context) = fill_query_context_over(
@@ -90,20 +97,44 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
 
             let mut points_by_request = Vec::with_capacity(searches.len());
             for group in &groups {
-                let query_vectors: Vec<_> = group.query_vectors.iter().collect();
-                let batched_points = segment.search_batch(
-                    group.params.vector_name,
-                    &query_vectors,
-                    &group.params.with_payload,
-                    &group.params.with_vector,
-                    group.params.filter,
-                    group.params.top,
-                    group.params.params,
-                    &segment_query_context,
-                )?;
-
-                debug_assert_eq!(batched_points.len(), group.query_vectors.len());
-                points_by_request.extend(batched_points);
+                match group {
+                    QueryBatchGroup::Vector(SearchBatchGroup {
+                        params,
+                        query_vectors,
+                    }) => {
+                        let query_vectors: Vec<_> = query_vectors.iter().collect();
+                        let batched_points = segment.search_batch(
+                            params.vector_name,
+                            &query_vectors,
+                            &params.with_payload,
+                            &params.with_vector,
+                            params.filter,
+                            params.top,
+                            params.params,
+                            &segment_query_context,
+                        )?;
+                        debug_assert_eq!(batched_points.len(), query_vectors.len());
+                        points_by_request.extend(batched_points);
+                    }
+                    QueryBatchGroup::Text(request) => {
+                        let QueryEnum::Text(text_query) = &request.query else {
+                            return Err(OperationError::service_error(
+                                "non-text query was assigned to a text search group",
+                            ));
+                        };
+                        let context = PayloadTextSearchContext {
+                            key: text_query.key.clone(),
+                            query: text_query.resolved_query()?,
+                            filter: request.filter.clone(),
+                            top: request.limit + request.offset,
+                            is_stopped: segment_query_context.is_stopped_handle(),
+                        };
+                        points_by_request.push(segment.search_payload_text(
+                            Arc::new(context),
+                            &segment_query_context.hardware_counter(),
+                        )?);
+                    }
+                }
             }
 
             Ok(points_by_request)
@@ -123,10 +154,12 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
         let mut points_by_request = aggregator.into_topk();
         debug_assert_eq!(points_by_request.len(), searches.len());
 
-        for ((points, search), distance) in
-            points_by_request.iter_mut().zip(searches).zip(distances)
+        for ((points, search), score_semantics) in points_by_request
+            .iter_mut()
+            .zip(searches)
+            .zip(score_semantics)
         {
-            postprocess_scores(points, search, distance);
+            postprocess_scores(points, search, score_semantics);
         }
 
         Ok(points_by_request)
@@ -138,31 +171,22 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
 fn postprocess_scores(
     points: &mut Vec<ScoredPoint>,
     search: &CoreSearchRequest,
-    distance: Distance,
+    score_semantics: ResolvedScoreSemantics,
 ) {
-    match &search.query {
-        // Only plain nearest-neighbour scores are raw segment distances; every other query
-        // already produces a comparable score of its own.
-        QueryEnum::Nearest(_) => {
-            for point in points.iter_mut() {
-                point.score = distance.postprocess_score(point.score);
-            }
-        }
-        QueryEnum::RecommendBestScore(_) => (),
-        QueryEnum::RecommendSumScores(_) => (),
-        QueryEnum::Discover(_) => (),
-        QueryEnum::Context(_) => (),
-        QueryEnum::FeedbackNaive(_) => (),
+    for point in points.iter_mut() {
+        point.score = score_semantics.postprocess(point.score);
     }
 
     if let Some(score_threshold) = search.score_threshold {
         debug_assert!(
-            points.is_sorted_by(|left, right| distance.is_ordered(left.score, right.score)),
+            points.is_sorted_by(|left, right| {
+                score_semantics.is_ordered(left.score, right.score)
+            }),
         );
 
         let below_threshold = points
             .iter()
-            .position(|point| !distance.check_threshold(point.score, score_threshold));
+            .position(|point| !score_semantics.passes_threshold(point.score, score_threshold));
 
         if let Some(below_threshold_idx) = below_threshold {
             points.truncate(below_threshold_idx);
