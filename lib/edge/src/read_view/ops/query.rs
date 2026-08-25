@@ -16,6 +16,7 @@ use segment::types::{
     Filter, HasIdCondition, ScoredPoint, WithPayload, WithPayloadInterface, WithVector,
 };
 use shard::query::mmr::mmr_from_points_with_vector;
+use shard::query::payload_query::{TextQueryStats, validate_text_query_schema};
 use shard::query::planned_query::*;
 use shard::query::scroll::{QueryScrollRequestInternal, ScrollOrder};
 use shard::query::*;
@@ -51,8 +52,9 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
     /// Returns one result list per request, in request order.
     pub(crate) fn query_batch(
         &self,
-        requests: Vec<ShardQueryRequest>,
+        mut requests: Vec<ShardQueryRequest>,
     ) -> OperationResult<Vec<Vec<ScoredPoint>>> {
+        self.resolve_text_queries(&mut requests)?;
         let planned_query = PlannedQuery::try_from(requests)?;
 
         let PlannedQuery {
@@ -81,6 +83,43 @@ impl<H: ReadSegmentHandle> EdgeReadView<H> {
         }
 
         Ok(scored_points_batch)
+    }
+
+    fn resolve_text_queries(&self, requests: &mut [ShardQueryRequest]) -> OperationResult<()> {
+        let stats_requests = requests
+            .iter()
+            .flat_map(ShardQueryRequest::text_query_stats_requests)
+            .collect::<AHashSet<_>>();
+        let hw_counter = HwMeasurementAcc::disposable_edge().get_counter_cell();
+        let is_stopped = AtomicBool::new(false);
+
+        for stats_request in stats_requests {
+            let schema = self.segments.iter().find_map(|segment| {
+                segment
+                    .read_segment()
+                    .get_indexed_fields()
+                    .get(&stats_request.key)
+                    .cloned()
+            });
+            validate_text_query_schema(&stats_request.key, schema.as_ref())?;
+
+            let mut stats = TextQueryStats::default();
+            for segment in &self.segments {
+                let segment_stats = segment.read_segment().payload_text_stats(
+                    &stats_request.key,
+                    &stats_request.query_str,
+                    stats_request.corpus.as_ref(),
+                    &is_stopped,
+                    &hw_counter,
+                )?;
+                stats.merge(segment_stats.into())?;
+            }
+            let (weights, average_document_length) = stats.into_query_parts();
+            for request in requests.iter_mut() {
+                request.set_text_query_stats(&stats_request, &weights, average_document_length);
+            }
+        }
+        Ok(())
     }
 
     fn resolve_plan(
