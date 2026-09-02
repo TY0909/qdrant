@@ -16,7 +16,7 @@ use segment::vector_storage::query::{
 };
 
 use crate::query::formula::*;
-use crate::query::payload_query::TextQueryInternal;
+use crate::query::payload_query::{ResolvedTextQuery, TextQueryInternal};
 use crate::query::query_enum::*;
 use crate::query::{
     FusionInternal, MmrInternal, SampleInternal, ScoringQuery, ShardPrefetch, ShardQueryRequest,
@@ -603,23 +603,30 @@ impl From<TextQueryInternal> for grpc::RawPayloadQuery {
         let TextQueryInternal {
             key,
             query_str,
-            query_token_weights,
-            average_document_length,
+            resolved,
         } = value;
         Self {
             variant: Some(grpc::raw_payload_query::Variant::Text(
                 grpc::raw_payload_query::Text {
                     key: key.to_string(),
                     query_str,
-                    query_token_weights: query_token_weights
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(token, idf)| grpc::RawQueryTokenWeight {
-                            token,
-                            idf: idf.into_inner(),
-                        })
-                        .collect(),
-                    average_document_length: average_document_length.map(OrderedFloat::into_inner),
+                    resolved: resolved.map(|resolved| {
+                        let ResolvedTextQuery {
+                            token_weights,
+                            average_document_length,
+                        } = resolved;
+                        grpc::raw_payload_query::text::Resolved {
+                            token_weights: token_weights
+                                .into_iter()
+                                .map(|(token, idf)| grpc::RawQueryTokenWeight {
+                                    token,
+                                    idf: idf.into_inner(),
+                                })
+                                .collect(),
+                            average_document_length: average_document_length
+                                .map(OrderedFloat::into_inner),
+                        }
+                    }),
                 },
             )),
         }
@@ -635,19 +642,25 @@ impl TryFrom<grpc::RawPayloadQuery> for TextQueryInternal {
             .ok_or_else(|| tonic::Status::invalid_argument("missing field: variant"))?;
         match variant {
             grpc::raw_payload_query::Variant::Text(text) => {
-                let key = text.key.parse().map_err(|_| {
-                    tonic::Status::invalid_argument(format!("invalid JSON path {}", text.key))
+                let grpc::raw_payload_query::Text {
+                    key,
+                    query_str,
+                    resolved,
+                } = text;
+                let key = key.parse().map_err(|_| {
+                    tonic::Status::invalid_argument(format!("invalid JSON path {key}"))
                 })?;
                 Ok(Self {
                     key,
-                    query_str: text.query_str,
-                    query_token_weights: (!text.query_token_weights.is_empty()).then(|| {
-                        text.query_token_weights
+                    query_str,
+                    resolved: resolved.map(|resolved| ResolvedTextQuery {
+                        token_weights: resolved
+                            .token_weights
                             .into_iter()
                             .map(|weight| (weight.token, OrderedFloat(weight.idf)))
-                            .collect()
+                            .collect(),
+                        average_document_length: resolved.average_document_length.map(OrderedFloat),
                     }),
-                    average_document_length: text.average_document_length.map(OrderedFloat),
                 })
             }
         }
@@ -938,4 +951,55 @@ fn try_from_decay_params(
         midpoint,
         scale,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message;
+
+    use super::*;
+
+    fn assert_payload_text_query_roundtrip(query: TextQueryInternal) {
+        let encoded = grpc::RawPayloadQuery::from(query.clone());
+        let bytes = encoded.encode_to_vec();
+        let wire_decoded = grpc::RawPayloadQuery::decode(bytes.as_slice()).unwrap();
+        let decoded = TextQueryInternal::try_from(wire_decoded).unwrap();
+        assert_eq!(decoded, query);
+    }
+
+    #[test]
+    fn unresolved_payload_text_query_roundtrip() {
+        assert_payload_text_query_roundtrip(TextQueryInternal {
+            key: "text".parse().unwrap(),
+            query_str: "pending".to_string(),
+            resolved: None,
+        });
+    }
+
+    #[test]
+    fn resolved_empty_payload_text_query_roundtrip() {
+        assert_payload_text_query_roundtrip(TextQueryInternal {
+            key: "text".parse().unwrap(),
+            query_str: "v. w".to_string(),
+            resolved: Some(ResolvedTextQuery {
+                token_weights: Vec::new(),
+                average_document_length: Some(OrderedFloat(3.5)),
+            }),
+        });
+    }
+
+    #[test]
+    fn resolved_non_empty_payload_text_query_roundtrip() {
+        assert_payload_text_query_roundtrip(TextQueryInternal {
+            key: "text".parse().unwrap(),
+            query_str: "brown fox".to_string(),
+            resolved: Some(ResolvedTextQuery {
+                token_weights: vec![
+                    ("brown".to_string(), OrderedFloat(1.25)),
+                    ("fox".to_string(), OrderedFloat(0.75)),
+                ],
+                average_document_length: None,
+            }),
+        });
+    }
 }

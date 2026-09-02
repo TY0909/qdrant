@@ -21,7 +21,7 @@ use segment::types::*;
 use serde::Serialize;
 
 use self::query_enum::*;
-use crate::query::payload_query::{TextQueryInternal, TextQueryStatsRequest};
+use crate::query::payload_query::{ResolvedTextQuery, TextQueryInternal, TextQueryStatsRequest};
 use crate::search::CoreSearchRequest;
 
 /// Internal response type for a universal query request.
@@ -88,8 +88,10 @@ impl ShardQueryRequest {
     ) {
         self.visit_text_queries_mut(&mut |text, params| {
             if text_query_stats_request(text, params) == *request {
-                text.query_token_weights = Some(weights.to_vec());
-                text.average_document_length = average_document_length;
+                text.resolved = Some(ResolvedTextQuery {
+                    token_weights: weights.to_vec(),
+                    average_document_length,
+                });
             }
         });
     }

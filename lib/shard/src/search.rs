@@ -416,7 +416,7 @@ mod tests {
     use segment::types::{Condition, HasIdCondition};
 
     use super::*;
-    use crate::query::payload_query::TextQueryInternal;
+    use crate::query::payload_query::{ResolvedTextQuery, TextQueryInternal};
 
     fn nearest(vector: Vec<f32>, limit: usize) -> CoreSearchRequest {
         CoreSearchRequest {
@@ -446,8 +446,10 @@ mod tests {
             query: QueryEnum::Text(TextQueryInternal {
                 key: JsonPath::new("description"),
                 query_str: query.to_string(),
-                query_token_weights: Some(vec![(query.to_string(), OrderedFloat(1.0))]),
-                average_document_length: Some(OrderedFloat(1.0)),
+                resolved: Some(ResolvedTextQuery {
+                    token_weights: vec![(query.to_string(), OrderedFloat(1.0))],
+                    average_document_length: Some(OrderedFloat(1.0)),
+                }),
             }),
             filter: None,
             params: None,

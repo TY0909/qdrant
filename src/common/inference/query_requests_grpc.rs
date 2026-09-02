@@ -303,8 +303,7 @@ fn convert_query_with_inferred(
                     Query::Text(shard::query::payload_query::TextQueryInternal {
                         key: text.key,
                         query_str: text.query_str,
-                        query_token_weights: None,
-                        average_document_length: None,
+                        resolved: None,
                     })
                 }
             }

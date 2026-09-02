@@ -358,10 +358,14 @@ message RawVector {
 
 message RawPayloadQuery {
   message Text {
+    message Resolved {
+      repeated RawQueryTokenWeight token_weights = 1;
+      optional double average_document_length = 2;
+    }
+
     string key = 1;
     string query_str = 2;
-    repeated RawQueryTokenWeight query_token_weights = 3;
-    optional double average_document_length = 4;
+    Resolved resolved = 3;
   }
 
   oneof variant {

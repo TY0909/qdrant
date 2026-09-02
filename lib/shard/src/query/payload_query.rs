@@ -9,29 +9,39 @@ use serde::Serialize;
 
 pub type TextQueryTokenWeights = Vec<(String, OrderedFloat<f32>)>;
 
+/// Collection-wide statistics required to execute a payload text query.
+///
+/// The token weights may be empty when all query tokens are removed by text
+/// preprocessing. Keeping them inside this resolved wrapper distinguishes that
+/// valid state from a query whose statistics have not been resolved yet.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize)]
+pub struct ResolvedTextQuery {
+    pub token_weights: TextQueryTokenWeights,
+    pub average_document_length: Option<OrderedFloat<f64>>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize)]
 pub struct TextQueryInternal {
     pub key: JsonPath,
     pub query_str: String,
-    /// Collection-wide IDF weights supplied by the coordinating node.
-    pub query_token_weights: Option<TextQueryTokenWeights>,
-    /// Collection-wide average document length supplied by the coordinating node.
-    pub average_document_length: Option<OrderedFloat<f64>>,
+    /// Collection-wide query statistics supplied by the coordinating node.
+    pub resolved: Option<ResolvedTextQuery>,
 }
 
 impl TextQueryInternal {
     pub fn resolved_query(&self) -> OperationResult<QueryTokenWeightSet> {
-        let Some(token_weights) = &self.query_token_weights else {
+        let Some(resolved) = &self.resolved else {
             return Err(OperationError::service_error(
                 "text query token weights were not resolved before segment search",
             ));
         };
-        let tokens = token_weights
+        let tokens = resolved
+            .token_weights
             .iter()
             .map(|(token, weight)| QueryTokenWeight::new(token.clone(), weight.into_inner()))
             .collect();
         let query = QueryTokenWeightSet::new(tokens);
-        Ok(match self.average_document_length {
+        Ok(match resolved.average_document_length {
             Some(average) => query.with_average_document_length(average.into_inner()),
             None => query,
         })
@@ -173,5 +183,32 @@ mod tests {
     fn bm25_idf_stays_positive_for_large_ubiquitous_terms() {
         let doc_count = 1 << 23;
         assert!(bm25_idf(doc_count, doc_count) > 0.0);
+    }
+
+    #[test]
+    fn unresolved_text_query_cannot_be_searched() {
+        let query = TextQueryInternal {
+            key: JsonPath::new("text"),
+            query_str: "pending".to_string(),
+            resolved: None,
+        };
+
+        assert!(query.resolved_query().is_err());
+    }
+
+    #[test]
+    fn resolved_empty_text_query_is_valid() {
+        let query = TextQueryInternal {
+            key: JsonPath::new("text"),
+            query_str: "v. w".to_string(),
+            resolved: Some(ResolvedTextQuery {
+                token_weights: Vec::new(),
+                average_document_length: Some(OrderedFloat(3.5)),
+            }),
+        };
+
+        let resolved = query.resolved_query().unwrap();
+        assert!(resolved.query_tokens().is_empty());
+        assert_eq!(resolved.average_document_length(), Some(3.5));
     }
 }

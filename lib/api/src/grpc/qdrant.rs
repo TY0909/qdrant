@@ -11230,10 +11230,21 @@ pub mod raw_payload_query {
         pub key: ::prost::alloc::string::String,
         #[prost(string, tag = "2")]
         pub query_str: ::prost::alloc::string::String,
-        #[prost(message, repeated, tag = "3")]
-        pub query_token_weights: ::prost::alloc::vec::Vec<super::RawQueryTokenWeight>,
-        #[prost(double, optional, tag = "4")]
-        pub average_document_length: ::core::option::Option<f64>,
+        #[prost(message, optional, tag = "3")]
+        pub resolved: ::core::option::Option<text::Resolved>,
+    }
+    /// Nested message and enum types in `Text`.
+    pub mod text {
+        #[derive(serde::Serialize)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct Resolved {
+            #[prost(message, repeated, tag = "1")]
+            pub token_weights: ::prost::alloc::vec::Vec<
+                super::super::RawQueryTokenWeight,
+            >,
+            #[prost(double, optional, tag = "2")]
+            pub average_document_length: ::core::option::Option<f64>,
+        }
     }
     #[derive(serde::Serialize)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
