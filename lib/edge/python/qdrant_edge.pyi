@@ -2123,6 +2123,11 @@ class Query(Enum):
         """Create a feedback naive query."""
         ...
 
+    @staticmethod
+    def Text(key: str, query_str: str) -> "Query":
+        """Create a BM25 payload text query."""
+        ...
+
 class Fusion:
     """Fusion methods for combining multiple prefetch results."""
 
@@ -3413,5 +3418,3 @@ class UpdateOperation:
             vector_name: Name of the vector to delete.
         """
         ...
-
-

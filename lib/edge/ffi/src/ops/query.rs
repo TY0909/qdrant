@@ -21,6 +21,7 @@ use segment::vector_storage::query::{
     FeedbackItem as SegmentFeedbackItem, NaiveFeedbackCoefficients, NaiveFeedbackQuery, RecoQuery,
 };
 use shard::query::formula::FormulaInternal;
+use shard::query::payload_query::TextQueryInternal;
 use shard::query::query_enum::QueryEnum;
 use shard::query::*;
 
@@ -183,7 +184,7 @@ pub struct FeedbackCoefficients {
     pub c: f32,
 }
 
-/// A primitive vector query.
+/// A primitive scoring query.
 ///
 /// Used directly by [`SearchRequest`](crate::ops::search::SearchRequest) and
 /// as the leaf of more complex [`ScoringQuery`] expressions. Every variant
@@ -247,6 +248,13 @@ pub enum Query {
         /// Vector field to search; `None`/`null` for the default field.
         #[uniffi(default = None)]
         using: Option<String>,
+    },
+    /// Full-text search against a BM25-enabled payload index.
+    Text {
+        /// Payload key to search. JSON-path syntax is supported.
+        key: String,
+        /// Text to tokenize and score against the indexed payload values.
+        query_str: String,
     },
 }
 
@@ -358,6 +366,11 @@ impl TryFrom<Query> for QueryEnum {
                     using: Some(using_or_default(using)),
                 })
             }
+            Query::Text { key, query_str } => QueryEnum::Text(TextQueryInternal {
+                key: crate::error::parse_json_path(&key)?,
+                query_str,
+                resolved: None,
+            }),
         })
     }
 }
@@ -798,6 +811,8 @@ fn assert_every_scoring_query_is_mapped(q: shard::query::ScoringQuery) {
             QueryEnum::Context(_) => {}
             // [`Query::Feedback`]
             QueryEnum::FeedbackNaive(_) => {}
+            // [`Query::Text`]
+            QueryEnum::Text(_) => {}
         },
         shard::query::ScoringQuery::Fusion(f) => match f {
             // [`Fusion::Rrf`], including `weights`
@@ -828,5 +843,36 @@ fn assert_every_scoring_query_is_mapped(q: shard::query::ScoringQuery) {
             // [`Sample::Random`]
             SampleInternal::Random => {}
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_query_converts_to_unresolved_internal_query() {
+        let query = QueryEnum::try_from(Query::Text {
+            key: "description".to_string(),
+            query_str: "rust search".to_string(),
+        })
+        .expect("valid text query must convert");
+
+        let QueryEnum::Text(query) = query else {
+            panic!("expected text query");
+        };
+        assert_eq!(query.key.to_string(), "description");
+        assert_eq!(query.query_str, "rust search");
+        assert_eq!(query.resolved, None);
+    }
+
+    #[test]
+    fn text_query_rejects_invalid_json_path() {
+        let result = QueryEnum::try_from(Query::Text {
+            key: "description[".to_string(),
+            query_str: "rust search".to_string(),
+        });
+
+        assert!(result.is_err());
     }
 }

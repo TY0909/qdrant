@@ -9,6 +9,7 @@ use ordered_float::OrderedFloat;
 use pyo3::prelude::*;
 use segment::data_types::vectors::{NamedQuery, VectorInternal};
 use segment::vector_storage::query::*;
+use shard::query::payload_query::TextQueryInternal;
 use shard::query::query_enum::QueryEnum;
 
 pub use self::with_payload::*;
@@ -24,7 +25,13 @@ impl FromPyObject<'_, '_> for PyQuery {
     type Error = PyErr;
 
     fn extract(query: Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
-        let query = match query.extract()? {
+        Ok(Self::from(query.extract::<PyQueryInterface>()?))
+    }
+}
+
+impl From<PyQueryInterface> for PyQuery {
+    fn from(query: PyQueryInterface) -> Self {
+        Self(match query {
             PyQueryInterface::Nearest { query, using } => QueryEnum::Nearest(NamedQuery {
                 query: VectorInternal::from(query),
                 using,
@@ -60,9 +67,13 @@ impl FromPyObject<'_, '_> for PyQuery {
                     using,
                 })
             }
-        };
 
-        Ok(Self(query))
+            PyQueryInterface::Text { key, query_str } => QueryEnum::Text(TextQueryInternal {
+                key: key.0,
+                query_str,
+                resolved: None,
+            }),
+        })
     }
 }
 
@@ -108,6 +119,15 @@ impl<'py> IntoPyObject<'py> for PyQuery {
                     using,
                 }
             }
+
+            QueryEnum::Text(TextQueryInternal {
+                key,
+                query_str,
+                resolved: _,
+            }) => PyQueryInterface::Text {
+                key: PyJsonPath(key),
+                query_str,
+            },
         };
 
         Bound::new(py, query)
@@ -124,36 +144,54 @@ impl<'py> IntoPyObject<'py> for &PyQuery {
     }
 }
 
+fn fmt_query_with_using(
+    f: &mut Formatter<'_>,
+    variant: &str,
+    query: &dyn Repr,
+    using: &Option<String>,
+) -> fmt::Result {
+    f.complex_enum::<PyQueryInterface>(variant, &[("query", query), ("using", using)])
+}
+
 impl Repr for PyQuery {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let (repr, query, using): (_, &dyn Repr, _) = match &self.0 {
+        match &self.0 {
             QueryEnum::Nearest(NamedQuery { query, using }) => {
-                ("Nearest", PyNamedVectorInternal::wrap_ref(query), using)
+                fmt_query_with_using(f, "Nearest", PyNamedVectorInternal::wrap_ref(query), using)
             }
-            QueryEnum::RecommendBestScore(NamedQuery { query, using }) => (
+            QueryEnum::RecommendBestScore(NamedQuery { query, using }) => fmt_query_with_using(
+                f,
                 "RecommendBestScore",
                 PyRecommendQuery::wrap_ref(query),
                 using,
             ),
-            QueryEnum::RecommendSumScores(NamedQuery { query, using }) => (
+            QueryEnum::RecommendSumScores(NamedQuery { query, using }) => fmt_query_with_using(
+                f,
                 "RecommendSumScores",
                 PyRecommendQuery::wrap_ref(query),
                 using,
             ),
             QueryEnum::Discover(NamedQuery { query, using }) => {
-                ("Discover", PyDiscoverQuery::wrap_ref(query), using)
+                fmt_query_with_using(f, "Discover", PyDiscoverQuery::wrap_ref(query), using)
             }
             QueryEnum::Context(NamedQuery { query, using }) => {
-                ("Context", PyContextQuery::wrap_ref(query), using)
+                fmt_query_with_using(f, "Context", PyContextQuery::wrap_ref(query), using)
             }
-            QueryEnum::FeedbackNaive(NamedQuery { query, using }) => (
+            QueryEnum::FeedbackNaive(NamedQuery { query, using }) => fmt_query_with_using(
+                f,
                 "FeedbackNaive",
                 PyFeedbackNaiveQuery::wrap_ref(query),
                 using,
             ),
-        };
-
-        f.complex_enum::<PyQueryInterface>(repr, &[("query", query), ("using", using)])
+            QueryEnum::Text(TextQueryInternal {
+                key,
+                query_str,
+                resolved: _,
+            }) => f.complex_enum::<PyQueryInterface>(
+                "Text",
+                &[("key", PyJsonPath::wrap_ref(key)), ("query_str", query_str)],
+            ),
+        }
     }
 }
 
@@ -195,6 +233,9 @@ pub enum PyQueryInterface {
         query: PyFeedbackNaiveQuery,
         using: Option<String>,
     },
+
+    #[pyo3(constructor = (key, query_str))]
+    Text { key: PyJsonPath, query_str: String },
 }
 
 #[pymethods]
@@ -206,20 +247,52 @@ impl PyQueryInterface {
 
 impl Repr for PyQueryInterface {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let (repr, query, using): (_, &dyn Repr, _) = match self {
-            PyQueryInterface::Nearest { query, using } => ("Nearest", query, using),
+        match self {
+            PyQueryInterface::Nearest { query, using } => {
+                fmt_query_with_using(f, "Nearest", query, using)
+            }
             PyQueryInterface::RecommendBestScore { query, using } => {
-                ("RecommendBestScore", query, using)
+                fmt_query_with_using(f, "RecommendBestScore", query, using)
             }
             PyQueryInterface::RecommendSumScores { query, using } => {
-                ("RecommendSumScores", query, using)
+                fmt_query_with_using(f, "RecommendSumScores", query, using)
             }
-            PyQueryInterface::Discover { query, using } => ("Discover", query, using),
-            PyQueryInterface::Context { query, using } => ("Context", query, using),
-            PyQueryInterface::FeedbackNaive { query, using } => ("FeedbackNaive", query, using),
-        };
+            PyQueryInterface::Discover { query, using } => {
+                fmt_query_with_using(f, "Discover", query, using)
+            }
+            PyQueryInterface::Context { query, using } => {
+                fmt_query_with_using(f, "Context", query, using)
+            }
+            PyQueryInterface::FeedbackNaive { query, using } => {
+                fmt_query_with_using(f, "FeedbackNaive", query, using)
+            }
+            PyQueryInterface::Text { key, query_str } => {
+                f.complex_enum::<Self>("Text", &[("key", key), ("query_str", query_str)])
+            }
+        }
+    }
+}
 
-        f.complex_enum::<Self>(repr, &[("query", query), ("using", using)])
+#[cfg(test)]
+mod tests {
+    use segment::json_path::JsonPath;
+
+    use super::*;
+
+    #[test]
+    fn text_query_converts_to_unresolved_internal_query() {
+        let key: JsonPath = "description".parse().expect("valid JSON path");
+        let PyQuery(query) = PyQuery::from(PyQueryInterface::Text {
+            key: PyJsonPath(key.clone()),
+            query_str: "rust search".to_string(),
+        });
+
+        let QueryEnum::Text(query) = query else {
+            panic!("expected text query");
+        };
+        assert_eq!(query.key, key);
+        assert_eq!(query.query_str, "rust search");
+        assert_eq!(query.resolved, None);
     }
 }
 
