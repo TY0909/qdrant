@@ -1,13 +1,13 @@
+use std::sync::atomic::AtomicBool;
+
 use common::condition_checker::{
     CheckItem, ConditionChecker, ConstantConditionChecker, Partitioner, Rest, Select,
 };
 use common::counter::hardware_accumulator::HwMeasurementAcc;
 use common::counter::hardware_counter::HardwareCounterCell;
-use common::types::PointOffsetType;
-use common::types::ScoredPointOffset;
+use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::UserData;
 use serde_json::Value;
-use std::sync::atomic::AtomicBool;
 
 use super::FullTextIndex;
 use super::full_text_index_read::{FullTextIndexRead, PayloadMatchQueryType};

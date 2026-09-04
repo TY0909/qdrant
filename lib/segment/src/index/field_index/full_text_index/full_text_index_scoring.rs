@@ -64,7 +64,8 @@ pub(super) struct FullTextSearchScratchGuard<'a> {
 
 impl FullTextSearchScratchGuard<'_> {
     pub(super) fn scratch(&mut self) -> &mut FullTextSearchScratch {
-        self.scratch.get_or_insert_with(FullTextSearchScratch::default)
+        self.scratch
+            .get_or_insert_with(FullTextSearchScratch::default)
     }
 }
 

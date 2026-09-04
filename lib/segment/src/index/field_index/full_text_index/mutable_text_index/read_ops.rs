@@ -1,7 +1,8 @@
+use std::sync::atomic::AtomicBool;
+
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::types::{PointOffsetType, ScoredPointOffset};
 use common::universal_io::UserData;
-use std::sync::atomic::AtomicBool;
 
 use super::super::full_text_index_read::FullTextIndexRead;
 use super::super::full_text_index_scoring::FullTextIndexScoring;
