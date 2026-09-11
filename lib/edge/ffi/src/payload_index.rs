@@ -19,6 +19,7 @@ use segment::data_types::index as segment_index;
 use segment::types::{
     Memory as SegmentMemory, PayloadIndexInfo as SegmentPayloadIndexInfo, PayloadSchemaParams,
 };
+use validator::Validate;
 
 use crate::config::Memory;
 use crate::error::EdgeError;
@@ -686,7 +687,7 @@ impl TryFrom<PayloadIndexParams> for PayloadSchemaParams {
                     stemmer,
                     enable_hnsw,
                 } = config;
-                Ok(PayloadSchemaParams::Text(segment_index::TextIndexParams {
+                let params = segment_index::TextIndexParams {
                     r#type: segment_index::TextIndexType::Text,
                     tokenizer: tokenizer
                         .map(segment_index::TokenizerType::from)
@@ -701,7 +702,11 @@ impl TryFrom<PayloadIndexParams> for PayloadSchemaParams {
                     memory: memory.map(SegmentMemory::from),
                     stemmer: stemmer.map(segment_index::StemmingAlgorithm::from),
                     enable_hnsw,
-                }))
+                };
+                params
+                    .validate()
+                    .map_err(|err| EdgeError::invalid_argument(err.to_string()))?;
+                Ok(PayloadSchemaParams::Text(params))
             }
             PayloadIndexParams::Bool { config } => {
                 let BoolIndexParams {

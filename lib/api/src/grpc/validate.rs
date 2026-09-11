@@ -557,7 +557,9 @@ impl Validate for super::qdrant::payload_index_params::IndexParams {
             }
             grpc::payload_index_params::IndexParams::FloatIndexParams(_) => Ok(()),
             grpc::payload_index_params::IndexParams::GeoIndexParams(_) => Ok(()),
-            grpc::payload_index_params::IndexParams::TextIndexParams(_) => Ok(()),
+            grpc::payload_index_params::IndexParams::TextIndexParams(text_index_params) => {
+                text_index_params.validate()
+            }
             grpc::payload_index_params::IndexParams::BoolIndexParams(_) => Ok(()),
             grpc::payload_index_params::IndexParams::DatetimeIndexParams(_) => Ok(()),
             grpc::payload_index_params::IndexParams::UuidIndexParams(_) => Ok(()),
@@ -576,6 +578,22 @@ impl Validate for super::qdrant::IntegerIndexParams {
             memory: _,
         } = &self;
         validate_integer_index_params(lookup, range)
+    }
+}
+
+impl Validate for grpc::TextIndexParams {
+    fn validate(&self) -> Result<(), ValidationErrors> {
+        if let (Some(min), Some(max)) = (self.min_token_len, self.max_token_len)
+            && min > max
+        {
+            let mut errors = ValidationErrors::new();
+            errors.add(
+                "min_token_len",
+                ValidationError::new("min_token_len must be less than or equal to max_token_len"),
+            );
+            return Err(errors);
+        }
+        Ok(())
     }
 }
 
@@ -790,6 +808,36 @@ mod tests {
             bad_request.validate().is_err(),
             "bad index request should error on validation"
         );
+    }
+
+    #[test]
+    fn test_text_index_token_length_validation() {
+        use crate::grpc::qdrant::{
+            FieldType, PayloadIndexParams, TextIndexParams, TokenizerType, payload_index_params,
+        };
+
+        for (min_token_len, max_token_len, valid) in
+            [(Some(10), Some(5), false), (Some(6), Some(6), true)]
+        {
+            let request = CreateFieldIndexCollection {
+                collection_name: "test_collection".into(),
+                field_name: "description".into(),
+                field_type: Some(FieldType::Text.into()),
+                field_index_params: Some(PayloadIndexParams {
+                    index_params: Some(payload_index_params::IndexParams::TextIndexParams(
+                        TextIndexParams {
+                            tokenizer: TokenizerType::Word.into(),
+                            min_token_len,
+                            max_token_len,
+                            ..Default::default()
+                        },
+                    )),
+                }),
+                ..Default::default()
+            };
+            let result = request.validate();
+            assert_eq!(result.is_ok(), valid, "{request:?}: {result:?}");
+        }
     }
 
     #[test]

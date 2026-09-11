@@ -3,15 +3,27 @@ use std::fmt;
 use common::counter::hardware_counter::HardwareCounterCell;
 use segment::common::operation_error::{OperationError, OperationResult};
 use shard::operations::vector_name_ops::VectorNameConfig;
-use shard::operations::{CollectionUpdateOperations, VectorNameOperations};
+use shard::operations::{CollectionUpdateOperations, FieldIndexOperations, VectorNameOperations};
 use shard::update::*;
 use shard::wal::WalRawRecord;
+use validator::Validate;
 
 use crate::EdgeShard;
 use crate::config::vectors::{EdgeSparseVectorParams, EdgeVectorParams};
 
 impl EdgeShard {
     pub fn update(&self, operation: CollectionUpdateOperations) -> OperationResult<()> {
+        // Validate before writing to the WAL so all bindings reject invalid index parameters.
+        if let CollectionUpdateOperations::FieldIndexOperation(FieldIndexOperations::CreateIndex(
+            create,
+        )) = &operation
+            && let Some(schema) = &create.field_schema
+        {
+            schema
+                .validate()
+                .map_err(|err| OperationError::validation_error(err.to_string()))?;
+        }
+
         // Reject a conflicting vector-name re-create before it reaches the WAL:
         // the segment-level create is idempotent, so re-creating an existing
         // name with different params silently no-ops storage. Failing loudly up
@@ -229,4 +241,43 @@ fn sparse_identity_matches(
 
 fn service_error(err: impl fmt::Display) -> OperationError {
     OperationError::service_error(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use segment::data_types::index::TextIndexParams;
+    use segment::types::{PayloadFieldSchema, PayloadSchemaParams};
+    use shard::operations::CreateIndex;
+
+    use super::*;
+    use crate::test_helpers::test_config;
+
+    #[test]
+    fn invalid_text_index_leaves_wal_and_existing_index_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let shard = EdgeShard::new(dir.path(), test_config()).unwrap();
+        let create_index = |min, max| {
+            CollectionUpdateOperations::FieldIndexOperation(FieldIndexOperations::CreateIndex(
+                CreateIndex {
+                    field_name: "description".parse().unwrap(),
+                    field_schema: Some(PayloadFieldSchema::FieldParams(PayloadSchemaParams::Text(
+                        TextIndexParams {
+                            min_token_len: Some(min),
+                            max_token_len: Some(max),
+                            ..Default::default()
+                        },
+                    ))),
+                },
+            ))
+        };
+
+        shard.update(create_index(6, 6)).unwrap();
+        let wal_len = shard.wal.lock().len(true);
+        let schema = shard.info().unwrap().payload_schema;
+
+        let error = shard.update(create_index(10, 5)).unwrap_err();
+        assert!(matches!(error, OperationError::ValidationError { .. }));
+        assert_eq!(shard.wal.lock().len(true), wal_len);
+        assert_eq!(shard.info().unwrap().payload_schema, schema);
+    }
 }

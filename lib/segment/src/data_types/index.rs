@@ -310,6 +310,22 @@ pub struct TextIndexParams {
     pub enable_hnsw: Option<bool>,
 }
 
+impl Validate for TextIndexParams {
+    fn validate(&self) -> Result<(), ValidationErrors> {
+        if let (Some(min), Some(max)) = (self.min_token_len, self.max_token_len)
+            && min > max
+        {
+            let mut errors = ValidationErrors::new();
+            errors.add(
+                "min_token_len",
+                ValidationError::new("min_token_len must be less than or equal to max_token_len"),
+            );
+            return Err(errors);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug, Deserialize, Serialize, JsonSchema, Clone, Copy, PartialEq, Hash, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Snowball {

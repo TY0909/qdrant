@@ -1063,6 +1063,31 @@ fn integer_index_params_both_capabilities_disabled_rejected() {
 }
 
 #[test]
+fn text_index_rejects_inverted_token_lengths() {
+    use qdrant_edge_ffi::update::UpdateOperation;
+    use qdrant_edge_ffi::{PayloadIndexParams, TextIndexParams};
+
+    let result = UpdateOperation::create_field_index_with_params(
+        "description".to_string(),
+        PayloadIndexParams::Text {
+            config: TextIndexParams {
+                tokenizer: None,
+                min_token_len: Some(10),
+                max_token_len: Some(5),
+                lowercase: None,
+                ascii_folding: None,
+                phrase_matching: None,
+                stopwords: None,
+                memory: None,
+                stemmer: None,
+                enable_hnsw: None,
+            },
+        },
+    );
+    assert!(matches!(result, Err(EdgeError::InvalidArgument { .. })));
+}
+
+#[test]
 fn payload_index_params_bad_field_name_rejected() {
     use qdrant_edge_ffi::update::UpdateOperation;
     use qdrant_edge_ffi::{KeywordIndexParams, PayloadIndexParams};

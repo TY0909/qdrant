@@ -28,6 +28,28 @@ def test_payload_indexing_validation(collection_name):
     assert response.status_code == 422
     assert "Validation error: the 'lookup' and 'range' capabilities can't be both disabled" in response.json()["status"]["error"]
 
+@pytest.mark.parametrize("min_token_len,max_token_len,status", [(10, 5, 422), (6, 6, 200)])
+def test_text_index_token_length_validation(collection_name, min_token_len, max_token_len, status):
+    response = request_with_validation(
+        api='/collections/{collection_name}/index',
+        method="PUT",
+        path_params={'collection_name': collection_name},
+        query_params={'wait': 'true'},
+        body={
+            "field_name": "description",
+            "field_schema": {
+                "type": "text",
+                "tokenizer": "word",
+                "min_token_len": min_token_len,
+                "max_token_len": max_token_len,
+            },
+        },
+    )
+    assert response.status_code == status
+    if status == 422:
+        assert "min_token_len must be less than or equal to max_token_len" in response.json()["status"]["error"]
+
+
 def test_payload_indexing_operations(collection_name):
     # create payload
     response = request_with_validation(

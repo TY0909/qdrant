@@ -33,6 +33,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true }
+validator = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
