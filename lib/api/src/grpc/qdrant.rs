@@ -2702,6 +2702,8 @@ pub enum TokenizerType {
     Word = 3,
     Multilingual = 4,
     Code = 5,
+    /// Default Unicode 17.0.0 word boundaries (UAX #29 revision 47).
+    Unicode = 6,
 }
 impl TokenizerType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2716,6 +2718,7 @@ impl TokenizerType {
             Self::Word => "Word",
             Self::Multilingual => "Multilingual",
             Self::Code => "Code",
+            Self::Unicode => "Unicode",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2727,6 +2730,7 @@ impl TokenizerType {
             "Word" => Some(Self::Word),
             "Multilingual" => Some(Self::Multilingual),
             "Code" => Some(Self::Code),
+            "Unicode" => Some(Self::Unicode),
             _ => None,
         }
     }

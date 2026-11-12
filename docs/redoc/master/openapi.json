@@ -8088,7 +8088,8 @@
           "whitespace",
           "word",
           "multilingual",
-          "code"
+          "code",
+          "unicode"
         ]
       },
       "StopwordsInterface": {

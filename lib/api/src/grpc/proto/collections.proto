@@ -703,6 +703,8 @@ enum TokenizerType {
   Word = 3;
   Multilingual = 4;
   Code = 5;
+  // Default Unicode 17.0.0 word boundaries (UAX #29 revision 47).
+  Unicode = 6;
 }
 
 message KeywordIndexParams {

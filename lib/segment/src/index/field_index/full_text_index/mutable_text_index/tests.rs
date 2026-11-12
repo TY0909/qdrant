@@ -18,6 +18,56 @@ fn filter_request(text: &str) -> FieldCondition {
 }
 
 #[test]
+fn test_unicode_index_roundtrip() {
+    use crate::index::field_index::PayloadFieldIndexRead;
+
+    let _scope = ambient::test_guard();
+    let temp_dir = Builder::new().prefix("unicode_index").tempdir().unwrap();
+    let path = temp_dir.path().join("index");
+    let config = TextIndexParams {
+        tokenizer: TokenizerType::Unicode,
+        phrase_matching: Some(true),
+        ..Default::default()
+    };
+    let mut index = gridstore_index(path.clone(), config.clone(), true, true)
+        .unwrap()
+        .unwrap();
+    for (id, text) in [
+        "We can't pay 32.3 euros. 我喜欢编程",
+        "We can pay 32 euros.",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        index
+            .add_point(id as PointOffsetType, &[&serde_json::json!(text)])
+            .unwrap();
+    }
+    index.flusher()().unwrap();
+    drop(index);
+
+    let index = gridstore_index(path, config, false, true).unwrap().unwrap();
+    for (query, expected) in [
+        ("CAN'T 32.3", vec![0]),
+        ("can 32", vec![1]),
+        ("编程", vec![0]),
+    ] {
+        let points: Vec<_> = index
+            .filter(&filter_request(query))
+            .unwrap()
+            .unwrap()
+            .collect();
+        assert_eq!(points, expected, "{query}");
+    }
+    for (phrase, expected) in [("can't pay", vec![0]), ("pay can't", vec![])] {
+        let condition =
+            FieldCondition::new_match(JsonPath::new("text"), Match::Phrase(phrase.into()));
+        let points: Vec<_> = index.filter(&condition).unwrap().unwrap().collect();
+        assert_eq!(points, expected, "{phrase}");
+    }
+}
+
+#[test]
 fn test_full_text_indexing() {
     use common::ambient;
 
